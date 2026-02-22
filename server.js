@@ -1,34 +1,20 @@
-require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-
-const app = express();
-
-// IMPORTANT:
-// Webhook must use raw body BEFORE express.json()
-app.post("/creem-webhook", express.raw({ type: "application/json" }), (req, res) => {
+app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
-    console.log("====== WEBHOOK RECEIVED ======");
-    console.log("Headers:", req.headers);
-    console.log("Raw body:", req.body.toString());
+    const payload = JSON.parse(req.body.toString());
 
-    return res.status(200).send("Webhook OK");
+    console.log("Webhook event:", payload.type);
+
+    if (payload.type === "subscription.active" || payload.type === "subscription.paid") {
+      const customerEmail = payload.data?.customer?.email;
+
+      console.log("Customer email:", customerEmail);
+
+      // TODO: Update Firestore user subscription here
+    }
+
+    return res.status(200).send("Webhook processed");
   } catch (err) {
     console.error("Webhook error:", err);
-    return res.status(200).send("Still returning 200");
+    return res.status(200).send("Error handled safely");
   }
-});
-
-// Normal middlewares AFTER webhook
-app.use(cors());
-app.use(express.json());
-
-app.get("/", (req, res) => {
-  res.send("Backend running");
-});
-
-const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
 });
