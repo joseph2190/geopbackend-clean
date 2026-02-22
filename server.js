@@ -4,21 +4,21 @@ const cors = require("cors");
 
 const app = express();
 
-// Webhook MUST come before express.json()
+/*
+  IMPORTANT:
+  Webhook route must use express.raw BEFORE express.json()
+  Otherwise signature parsing and body reading break.
+*/
 app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
-    const payload = JSON.parse(req.body.toString());
+    const rawBody = req.body.toString();
+    const payload = JSON.parse(rawBody);
 
-    console.log("====== WEBHOOK RECEIVED ======");
-    console.log("Event type:", payload.type);
-
-    if (
-      payload.type === "subscription.active" ||
-      payload.type === "subscription.paid"
-    ) {
-      const customerEmail = payload.data?.customer?.email;
-      console.log("Customer email:", customerEmail);
-    }
+    console.log("=================================");
+    console.log("====== CREEM WEBHOOK RECEIVED ======");
+    console.log("Full Payload:");
+    console.log(JSON.stringify(payload, null, 2));
+    console.log("=================================");
 
     return res.status(200).send("Webhook processed");
   } catch (err) {
