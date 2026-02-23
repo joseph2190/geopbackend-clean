@@ -6,7 +6,7 @@ const admin = require("firebase-admin");
 const app = express();
 
 /* =========================================
-   FIREBASE INIT
+   FIREBASE INITIALIZATION
 ========================================= */
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -19,112 +19,19 @@ admin.initializeApp({
 const db = admin.firestore();
 
 /* =========================================
-   DODO WEBHOOK
+   DODO WEBHOOK (DEBUG MODE)
 ========================================= */
 app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
-    const payload = JSON.parse(req.body.toString());
+    const rawBody = req.body.toString();
+    const payload = JSON.parse(rawBody);
 
-    console.log("====== DODO WEBHOOK RECEIVED ======");
-    console.log("Event Type:", payload.type);
+    console.log("==========================================");
+    console.log("====== FULL DODO WEBHOOK PAYLOAD ======");
+    console.log(JSON.stringify(payload, null, 2));
+    console.log("==========================================");
 
-    const eventType = payload.type;
-
-    /* ============================
-       PAYMENT SUCCESS
-    ============================ */
-    if (eventType === "payment.succeeded") {
-
-      const productId = payload.data?.product_id;
-      const customerEmail = payload.data?.customer?.email;
-
-      console.log("Customer:", customerEmail);
-      console.log("Product:", productId);
-
-      if (!productId || !customerEmail) {
-        return res.status(200).send("Missing data");
-      }
-
-      const usersRef = db.collection("users");
-      const snapshot = await usersRef.where("email", "==", customerEmail).get();
-
-      if (snapshot.empty) {
-        console.log("User not found");
-        return res.status(200).send("User not found");
-      }
-
-      const userDoc = snapshot.docs[0];
-      const currentData = userDoc.data();
-
-      /* ============================
-         SUBSCRIPTIONS
-      ============================ */
-      if (productId === process.env.DODO_LITE_PRODUCT_ID) {
-        await userDoc.ref.update({
-          subscriptionTier: "lite",
-          subscriptionCredits: 15,
-          subscriptionUsed: 0,
-          subscriptionStartDate: new Date().toISOString(),
-        });
-        console.log("Upgraded to Lite");
-      }
-
-      else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
-        await userDoc.ref.update({
-          subscriptionTier: "pro",
-          subscriptionCredits: 50,
-          subscriptionUsed: 0,
-          subscriptionStartDate: new Date().toISOString(),
-        });
-        console.log("Upgraded to Pro");
-      }
-
-      /* ============================
-         ONE TIME CREDIT PACKS
-      ============================ */
-      else if (productId === process.env.DODO_STARTER_PRODUCT_ID) {
-        await userDoc.ref.update({
-          purchasedCredits: (currentData.purchasedCredits || 0) + 5,
-        });
-        console.log("Added 5 credits");
-      }
-
-      else if (productId === process.env.DODO_POWER_PRODUCT_ID) {
-        await userDoc.ref.update({
-          purchasedCredits: (currentData.purchasedCredits || 0) + 50,
-        });
-        console.log("Added 50 credits");
-      }
-
-      else {
-        console.log("Unknown product ID");
-      }
-    }
-
-    /* ============================
-       SUBSCRIPTION CANCEL
-    ============================ */
-    if (eventType === "subscription.cancelled") {
-
-      const customerEmail = payload.data?.customer?.email;
-
-      if (!customerEmail) return res.status(200).send("No email");
-
-      const usersRef = db.collection("users");
-      const snapshot = await usersRef.where("email", "==", customerEmail).get();
-
-      if (!snapshot.empty) {
-        await snapshot.docs[0].ref.update({
-          subscriptionTier: "free",
-          subscriptionCredits: 5,
-          subscriptionUsed: 0,
-        });
-
-        console.log("User downgraded to free");
-      }
-    }
-
-    return res.status(200).send("Webhook processed");
+    return res.status(200).send("Webhook logged successfully");
 
   } catch (err) {
     console.error("Webhook error:", err);
@@ -133,7 +40,7 @@ app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req,
 });
 
 /* =========================================
-   NORMAL EXPRESS
+   NORMAL EXPRESS MIDDLEWARE
 ========================================= */
 app.use(cors());
 app.use(express.json());
