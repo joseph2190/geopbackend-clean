@@ -5,10 +5,9 @@ const admin = require("firebase-admin");
 
 const app = express();
 
-/*
-  Initialize Firebase Admin
-  (Using environment variables in Render, NOT JSON file)
-*/
+/* =========================================
+   FIREBASE INITIALIZATION
+========================================= */
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -19,9 +18,9 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/*
-  Creem Webhook
-*/
+/* =========================================
+   CREEM WEBHOOK (RAW BODY REQUIRED)
+========================================= */
 app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
     const payload = JSON.parse(req.body.toString());
@@ -31,36 +30,50 @@ app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req
 
     const eventType = payload.eventType;
 
-    if (eventType === "subscription.active" || eventType === "subscription.paid") {
+    /* =========================================
+       SUBSCRIPTION ACTIVATION / PAYMENT
+    ========================================= */
+    if (
+      eventType === "subscription.active" ||
+      eventType === "subscription.paid"
+    ) {
       const customerEmail = payload.object?.customer?.email;
       const productId = payload.object?.product?.id;
 
       console.log("Customer email:", customerEmail);
       console.log("Product ID:", productId);
 
-      if (!customerEmail) {
-        return res.status(200).send("No email found");
+      if (!customerEmail || !productId) {
+        return res.status(200).send("Missing subscription data");
       }
 
-      // Find user by email
-      const usersRef = db.collection("users");
-      const snapshot = await usersRef.where("email", "==", customerEmail).get();
+      let newTier = null;
+      let newCredits = 0;
 
-      if (snapshot.empty) {
-        console.log("No user found with that email");
-        return res.status(200).send("User not found");
+      if (productId === process.env.CREEM_LITE_PRODUCT_ID) {
+        newTier = "lite";
+        newCredits = 15;
       }
-
-      const userDoc = snapshot.docs[0];
-
-      // Decide plan based on product ID
-      let newTier = "lite";
-      let newCredits = 15;
 
       if (productId === process.env.CREEM_PRO_PRODUCT_ID) {
         newTier = "pro";
         newCredits = 50;
       }
+
+      if (!newTier) {
+        console.log("Unknown subscription product");
+        return res.status(200).send("Unknown subscription product");
+      }
+
+      const usersRef = db.collection("users");
+      const snapshot = await usersRef.where("email", "==", customerEmail).get();
+
+      if (snapshot.empty) {
+        console.log("User not found");
+        return res.status(200).send("User not found");
+      }
+
+      const userDoc = snapshot.docs[0];
 
       await userDoc.ref.update({
         subscriptionTier: newTier,
@@ -73,6 +86,79 @@ app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req
       console.log("User upgraded to:", newTier);
     }
 
+    /* =========================================
+       SUBSCRIPTION CANCEL / EXPIRE / UNPAID
+    ========================================= */
+    if (
+      eventType === "subscription.canceled" ||
+      eventType === "subscription.unpaid" ||
+      eventType === "subscription.expired"
+    ) {
+      const customerEmail = payload.object?.customer?.email;
+
+      if (!customerEmail) {
+        return res.status(200).send("Missing email for downgrade");
+      }
+
+      const usersRef = db.collection("users");
+      const snapshot = await usersRef.where("email", "==", customerEmail).get();
+
+      if (!snapshot.empty) {
+        const userDoc = snapshot.docs[0];
+
+        await userDoc.ref.update({
+          subscriptionTier: "free",
+          totalCredits: 5,
+          creditsUsed: 0,
+        });
+
+        console.log("User downgraded to free");
+      }
+    }
+
+    /* =========================================
+       ONE-TIME CREDIT PACKS
+    ========================================= */
+    if (eventType === "checkout.completed") {
+      const customerEmail = payload.object?.customer?.email;
+      const productId = payload.object?.product?.id;
+
+      if (!customerEmail || !productId) {
+        return res.status(200).send("Missing checkout data");
+      }
+
+      let creditsToAdd = 0;
+
+      if (productId === process.env.CREEM_STARTER_PRODUCT_ID) {
+        creditsToAdd = 5;
+      }
+
+      if (productId === process.env.CREEM_POWER_PRODUCT_ID) {
+        creditsToAdd = 50;
+      }
+
+      if (!creditsToAdd) {
+        return res.status(200).send("Not a credit product");
+      }
+
+      const usersRef = db.collection("users");
+      const snapshot = await usersRef.where("email", "==", customerEmail).get();
+
+      if (snapshot.empty) {
+        console.log("User not found for credit pack");
+        return res.status(200).send("User not found");
+      }
+
+      const userDoc = snapshot.docs[0];
+      const currentData = userDoc.data();
+
+      await userDoc.ref.update({
+        totalCredits: (currentData.totalCredits || 0) + creditsToAdd,
+      });
+
+      console.log("Credits added:", creditsToAdd);
+    }
+
     return res.status(200).send("Webhook processed");
   } catch (err) {
     console.error("Webhook error:", err);
@@ -80,7 +166,9 @@ app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req
   }
 });
 
-// Normal middleware AFTER webhook
+/* =========================================
+   NORMAL EXPRESS MIDDLEWARE
+========================================= */
 app.use(cors());
 app.use(express.json());
 
