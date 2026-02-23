@@ -6,7 +6,7 @@ const admin = require("firebase-admin");
 const app = express();
 
 /* =========================================
-   FIREBASE INITIALIZATION
+   FIREBASE INIT
 ========================================= */
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -19,50 +19,30 @@ admin.initializeApp({
 const db = admin.firestore();
 
 /* =========================================
-   CREEM WEBHOOK (RAW BODY REQUIRED)
+   DODO WEBHOOK
 ========================================= */
-app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req, res) => {
+app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
     const payload = JSON.parse(req.body.toString());
 
-    console.log("====== CREEM WEBHOOK RECEIVED ======");
-    console.log("Event Type:", payload.eventType);
+    console.log("====== DODO WEBHOOK RECEIVED ======");
+    console.log("Event Type:", payload.type);
 
-    const eventType = payload.eventType;
+    const eventType = payload.type;
 
-    /* =========================================
-       SUBSCRIPTION ACTIVATION / PAYMENT
-    ========================================= */
-    if (
-      eventType === "subscription.active" ||
-      eventType === "subscription.paid"
-    ) {
-      const customerEmail = payload.object?.customer?.email;
-      const productId = payload.object?.product?.id;
+    /* ============================
+       PAYMENT SUCCESS
+    ============================ */
+    if (eventType === "payment.succeeded") {
 
-      console.log("Customer email:", customerEmail);
-      console.log("Product ID:", productId);
+      const productId = payload.data?.product_id;
+      const customerEmail = payload.data?.customer?.email;
 
-      if (!customerEmail || !productId) {
-        return res.status(200).send("Missing subscription data");
-      }
+      console.log("Customer:", customerEmail);
+      console.log("Product:", productId);
 
-      let newTier = null;
-      let newCredits = 0;
-
-      if (productId === process.env.CREEM_LITE_PRODUCT_ID) {
-        newTier = "lite";
-        newCredits = 15;
-      }
-
-      if (productId === process.env.CREEM_PRO_PRODUCT_ID) {
-        newTier = "pro";
-        newCredits = 50;
-      }
-
-      if (!newTier) {
-        console.log("Unknown subscription product");
-        return res.status(200).send("Unknown subscription product");
+      if (!productId || !customerEmail) {
+        return res.status(200).send("Missing data");
       }
 
       const usersRef = db.collection("users");
@@ -74,92 +54,78 @@ app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req
       }
 
       const userDoc = snapshot.docs[0];
+      const currentData = userDoc.data();
 
-      await userDoc.ref.update({
-        subscriptionTier: newTier,
-        totalCredits: newCredits,
-        creditsUsed: 0,
-        subscriptionStartDate: new Date().toISOString(),
-        lastDailyReset: new Date().toISOString(),
-      });
+      /* ============================
+         SUBSCRIPTIONS
+      ============================ */
+      if (productId === process.env.DODO_LITE_PRODUCT_ID) {
+        await userDoc.ref.update({
+          subscriptionTier: "lite",
+          subscriptionCredits: 15,
+          subscriptionUsed: 0,
+          subscriptionStartDate: new Date().toISOString(),
+        });
+        console.log("Upgraded to Lite");
+      }
 
-      console.log("User upgraded to:", newTier);
+      else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
+        await userDoc.ref.update({
+          subscriptionTier: "pro",
+          subscriptionCredits: 50,
+          subscriptionUsed: 0,
+          subscriptionStartDate: new Date().toISOString(),
+        });
+        console.log("Upgraded to Pro");
+      }
+
+      /* ============================
+         ONE TIME CREDIT PACKS
+      ============================ */
+      else if (productId === process.env.DODO_STARTER_PRODUCT_ID) {
+        await userDoc.ref.update({
+          purchasedCredits: (currentData.purchasedCredits || 0) + 5,
+        });
+        console.log("Added 5 credits");
+      }
+
+      else if (productId === process.env.DODO_POWER_PRODUCT_ID) {
+        await userDoc.ref.update({
+          purchasedCredits: (currentData.purchasedCredits || 0) + 50,
+        });
+        console.log("Added 50 credits");
+      }
+
+      else {
+        console.log("Unknown product ID");
+      }
     }
 
-    /* =========================================
-       SUBSCRIPTION CANCEL / EXPIRE / UNPAID
-    ========================================= */
-    if (
-      eventType === "subscription.canceled" ||
-      eventType === "subscription.unpaid" ||
-      eventType === "subscription.expired"
-    ) {
-      const customerEmail = payload.object?.customer?.email;
+    /* ============================
+       SUBSCRIPTION CANCEL
+    ============================ */
+    if (eventType === "subscription.cancelled") {
 
-      if (!customerEmail) {
-        return res.status(200).send("Missing email for downgrade");
-      }
+      const customerEmail = payload.data?.customer?.email;
+
+      if (!customerEmail) return res.status(200).send("No email");
 
       const usersRef = db.collection("users");
       const snapshot = await usersRef.where("email", "==", customerEmail).get();
 
       if (!snapshot.empty) {
-        const userDoc = snapshot.docs[0];
-
-        await userDoc.ref.update({
+        await snapshot.docs[0].ref.update({
           subscriptionTier: "free",
-          totalCredits: 5,
-          creditsUsed: 0,
+          subscriptionCredits: 5,
+          subscriptionUsed: 0,
         });
 
         console.log("User downgraded to free");
       }
     }
 
-    /* =========================================
-       ONE-TIME CREDIT PACKS
-    ========================================= */
-    if (eventType === "checkout.completed") {
-      const customerEmail = payload.object?.customer?.email;
-      const productId = payload.object?.product?.id;
-
-      if (!customerEmail || !productId) {
-        return res.status(200).send("Missing checkout data");
-      }
-
-      let creditsToAdd = 0;
-
-      if (productId === process.env.CREEM_STARTER_PRODUCT_ID) {
-        creditsToAdd = 5;
-      }
-
-      if (productId === process.env.CREEM_POWER_PRODUCT_ID) {
-        creditsToAdd = 50;
-      }
-
-      if (!creditsToAdd) {
-        return res.status(200).send("Not a credit product");
-      }
-
-      const usersRef = db.collection("users");
-      const snapshot = await usersRef.where("email", "==", customerEmail).get();
-
-      if (snapshot.empty) {
-        console.log("User not found for credit pack");
-        return res.status(200).send("User not found");
-      }
-
-      const userDoc = snapshot.docs[0];
-      const currentData = userDoc.data();
-
-      await userDoc.ref.update({
-        totalCredits: (currentData.totalCredits || 0) + creditsToAdd,
-      });
-
-      console.log("Credits added:", creditsToAdd);
-    }
-
     return res.status(200).send("Webhook processed");
+
   } catch (err) {
     console.error("Webhook error:", err);
     return res.status(200).send("Error handled safely");
@@ -167,7 +133,7 @@ app.post("/creem-webhook", express.raw({ type: "application/json" }), async (req
 });
 
 /* =========================================
-   NORMAL EXPRESS MIDDLEWARE
+   NORMAL EXPRESS
 ========================================= */
 app.use(cors());
 app.use(express.json());
