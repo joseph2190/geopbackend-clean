@@ -7,8 +7,8 @@ const DodoPayments = require("dodopayments");
 const app = express();
 
 /* =========================================
-   CORS CONFIGURATION
-   (Temporary allow all for testing)
+   CORS CONFIG
+   (Allow all for testing — restrict later)
 ========================================= */
 app.use(cors({
   origin: "*",
@@ -16,7 +16,12 @@ app.use(cors({
 }));
 
 /* =========================================
-   FIREBASE INITIALIZATION
+   JSON PARSER
+========================================= */
+app.use(express.json());
+
+/* =========================================
+   FIREBASE INIT
 ========================================= */
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -29,17 +34,12 @@ admin.initializeApp({
 const db = admin.firestore();
 
 /* =========================================
-   DODO CLIENT INITIALIZATION
+   DODO CLIENT INIT
 ========================================= */
 const dodo = new DodoPayments({
   bearerToken: process.env.DODO_PAYMENTS_API_KEY,
   environment: "test_mode", // change to live_mode later
 });
-
-/* =========================================
-   PARSE JSON FOR NORMAL ROUTES
-========================================= */
-app.use(express.json());
 
 /* =========================================
    CREATE CHECKOUT SESSION
@@ -92,9 +92,9 @@ app.post("/create-checkout-session", async (req, res) => {
 /* =========================================
    DODO WEBHOOK
 ========================================= */
-app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req, res) => {
+app.post("/dodo-webhook", async (req, res) => {
   try {
-    const payload = JSON.parse(req.body.toString());
+    const payload = req.body;
 
     console.log("====== DODO WEBHOOK RECEIVED ======");
     console.log("Event Type:", payload.type);
@@ -103,6 +103,9 @@ app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req,
 
       const firebaseUid = payload.data?.metadata?.firebaseUid;
       const productId = payload.data?.product_cart?.[0]?.product_id;
+
+      console.log("UID:", firebaseUid);
+      console.log("Product ID:", productId);
 
       if (!firebaseUid || !productId) {
         console.log("Missing metadata or productId");
@@ -167,7 +170,7 @@ app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req,
 });
 
 /* =========================================
-   ROOT ROUTE
+   ROOT
 ========================================= */
 app.get("/", (req, res) => {
   res.send("Backend running");
