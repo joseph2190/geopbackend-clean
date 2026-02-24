@@ -2,10 +2,13 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
+const DodoPayments = require("dodopayments");
 
 const app = express();
 
-/* FIREBASE INIT */
+/* =========================================
+   FIREBASE INIT
+========================================= */
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -16,72 +19,108 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-/* DODO WEBHOOK */
+/* =========================================
+   DODO CLIENT
+========================================= */
+const dodo = new DodoPayments({
+  bearerToken: process.env.DODO_PAYMENTS_API_KEY,
+  environment: "test_mode", // change to live_mode later
+});
+
+/* =========================================
+   CREATE CHECKOUT SESSION
+========================================= */
+app.use(express.json());
+
+app.post("/create-checkout-session", async (req, res) => {
+  try {
+    const { firebaseUid, productId } = req.body;
+
+    if (!firebaseUid || !productId) {
+      return res.status(400).json({ error: "Missing data" });
+    }
+
+    const userDoc = await db.collection("users").doc(firebaseUid).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userData = userDoc.data();
+
+    const session = await dodo.checkoutSessions.create({
+      product_cart: [{ product_id: productId, quantity: 1 }],
+      customer: {
+        email: userData.email,
+        name: userData.email,
+      },
+      metadata: {
+        firebaseUid: firebaseUid,
+      },
+      return_url: "https://your-frontend-domain.com/payment-success",
+    });
+
+    return res.json({ checkoutUrl: session.checkout_url });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Session creation failed" });
+  }
+});
+
+/* =========================================
+   DODO WEBHOOK
+========================================= */
 app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
     const payload = JSON.parse(req.body.toString());
 
-    console.log("====== DODO WEBHOOK RECEIVED ======");
-    console.log("Event Type:", payload.type);
-
     if (payload.type === "payment.succeeded") {
 
-      const customerEmail = payload.data?.customer?.email;
-      const paymentLink = payload.data?.payment_link;
+      const firebaseUid = payload.data?.metadata?.firebaseUid;
+      const productId = payload.data?.product_cart?.[0]?.product_id;
 
-      if (!customerEmail || !paymentLink) {
-        return res.status(200).send("Missing data");
+      if (!firebaseUid || !productId) {
+        return res.status(200).send("Missing metadata");
       }
 
-      const usersRef = db.collection("users");
-      const snapshot = await usersRef.where("email", "==", customerEmail).get();
+      const userRef = db.collection("users").doc(firebaseUid);
+      const userDoc = await userRef.get();
 
-      if (snapshot.empty) {
-        console.log("User not found");
+      if (!userDoc.exists) {
         return res.status(200).send("User not found");
       }
 
-      const userDoc = snapshot.docs[0];
       const currentData = userDoc.data();
 
       /* SUBSCRIPTIONS */
-      if (paymentLink === process.env.DODO_LITE_LINK) {
-        await userDoc.ref.update({
+      if (productId === process.env.DODO_LITE_PRODUCT_ID) {
+        await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
           subscriptionUsed: 0,
-          subscriptionStartDate: new Date().toISOString(),
         });
-        console.log("Upgraded to Lite");
       }
 
-      else if (paymentLink === process.env.DODO_PRO_LINK) {
-        await userDoc.ref.update({
+      else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
+        await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
           subscriptionUsed: 0,
-          subscriptionStartDate: new Date().toISOString(),
         });
-        console.log("Upgraded to Pro");
       }
 
       /* CREDIT PACKS */
-      else if (paymentLink === process.env.DODO_STARTER_LINK) {
-        await userDoc.ref.update({
+      else if (productId === process.env.DODO_STARTER_PRODUCT_ID) {
+        await userRef.update({
           purchasedCredits: (currentData.purchasedCredits || 0) + 5,
         });
-        console.log("Added 5 credits");
       }
 
-      else if (paymentLink === process.env.DODO_POWER_LINK) {
-        await userDoc.ref.update({
+      else if (productId === process.env.DODO_POWER_PRODUCT_ID) {
+        await userRef.update({
           purchasedCredits: (currentData.purchasedCredits || 0) + 50,
         });
-        console.log("Added 50 credits");
-      }
-
-      else {
-        console.log("Unknown payment link");
       }
     }
 
@@ -93,10 +132,9 @@ app.post("/dodo-webhook", express.raw({ type: "application/json" }), async (req,
   }
 });
 
-/* EXPRESS */
-app.use(cors());
-app.use(express.json());
-
+/* =========================================
+   ROOT
+========================================= */
 app.get("/", (req, res) => {
   res.send("Backend running");
 });
