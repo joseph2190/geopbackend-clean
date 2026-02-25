@@ -6,7 +6,12 @@ const DodoPayments = require("dodopayments");
 
 const app = express();
 
-app.use(cors({ origin: "*", methods: ["GET", "POST", "OPTIONS"] }));
+/* ================= CORS ================= */
+app.use(cors({
+  origin: "*", // restrict later to your domain
+  methods: ["GET", "POST", "OPTIONS"],
+}));
+
 app.use(express.json());
 
 /* ================= FIREBASE ================= */
@@ -25,20 +30,23 @@ const db = admin.firestore();
 
 const dodo = new DodoPayments({
   bearerToken: process.env.DODO_PAYMENTS_API_KEY,
-  environment: "test_mode",
+  environment: "test_mode", // change to "live_mode" when going live
 });
 
-/* ================= CREATE CHECKOUT ================= */
+/* ================= CREATE CHECKOUT SESSION ================= */
 
 app.post("/create-checkout-session", async (req, res) => {
   try {
+    console.log("=== CREATE CHECKOUT SESSION CALLED ===");
+
     const { firebaseUid, productId } = req.body;
 
     if (!firebaseUid || !productId) {
-      return res.status(400).json({ error: "Missing data" });
+      return res.status(400).json({ error: "Missing firebaseUid or productId" });
     }
 
     const userDoc = await db.collection("users").doc(firebaseUid).get();
+
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -57,8 +65,8 @@ app.post("/create-checkout-session", async (req, res) => {
         name: userData.email,
       },
       metadata: {
-        firebaseUid: firebaseUid,
-        productId: productId, // 🔥 IMPORTANT FIX
+        firebaseUid,
+        productId,
       },
       return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
     });
@@ -66,12 +74,12 @@ app.post("/create-checkout-session", async (req, res) => {
     res.json({ checkoutUrl: session.checkout_url });
 
   } catch (err) {
-    console.error("Checkout error:", err);
-    res.status(500).json({ error: "Failed to create session" });
+    console.error("Checkout session error:", err);
+    res.status(500).json({ error: "Session creation failed" });
   }
 });
 
-/* ================= WEBHOOK ================= */
+/* ================= DODO WEBHOOK ================= */
 
 app.post("/dodo-webhook", async (req, res) => {
   try {
@@ -80,63 +88,82 @@ app.post("/dodo-webhook", async (req, res) => {
     console.log("====== DODO WEBHOOK RECEIVED ======");
     console.log("Event Type:", payload.type);
 
-    if (payload.type === "payment.succeeded") {
+    const firebaseUid = payload.data?.metadata?.firebaseUid;
+    const productId = payload.data?.metadata?.productId;
 
-      const firebaseUid = payload.data?.metadata?.firebaseUid;
-      const productId = payload.data?.metadata?.productId; // 🔥 READ FROM METADATA
+    if (!firebaseUid) {
+      return res.status(200).send("No UID");
+    }
 
-      console.log("UID:", firebaseUid);
-      console.log("Product ID:", productId);
+    const userRef = db.collection("users").doc(firebaseUid);
+    const userDoc = await userRef.get();
 
-      if (!firebaseUid || !productId) {
-        console.log("Missing metadata");
-        return res.status(200).send("Missing metadata");
-      }
+    if (!userDoc.exists) {
+      return res.status(200).send("User not found");
+    }
 
-      const userRef = db.collection("users").doc(firebaseUid);
-      const userDoc = await userRef.get();
-      if (!userDoc.exists) {
-        console.log("User not found");
-        return res.status(200).send("User not found");
-      }
+    const userData = userDoc.data();
 
-      const currentData = userDoc.data();
+    /* ================= PAYMENT SUCCEEDED OR RENEWAL ================= */
 
+    if (
+      payload.type === "payment.succeeded" ||
+      payload.type === "subscription.renewed"
+    ) {
+
+      /* ===== LITE SUBSCRIPTION ===== */
       if (productId === process.env.DODO_LITE_PRODUCT_ID) {
         await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
-          subscriptionUsed: 0,
+          subscriptionUsed: 0, // 🔁 RESET EVERY BILLING CYCLE
+          subscriptionStartDate: new Date().toISOString(),
         });
-        console.log("User upgraded to Lite");
+
+        console.log("Lite subscription activated/reset");
       }
 
+      /* ===== PRO SUBSCRIPTION ===== */
       else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
         await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
           subscriptionUsed: 0,
+          subscriptionStartDate: new Date().toISOString(),
         });
-        console.log("User upgraded to Pro");
+
+        console.log("Pro subscription activated/reset");
       }
 
+      /* ===== STARTER PACK ===== */
       else if (productId === process.env.DODO_STARTER_PRODUCT_ID) {
         await userRef.update({
-          purchasedCredits: (currentData.purchasedCredits || 0) + 5,
+          purchasedCredits: (userData.purchasedCredits || 0) + 5,
         });
-        console.log("Added 5 credits");
+
+        console.log("Added 5 purchased credits");
       }
 
+      /* ===== POWER PACK ===== */
       else if (productId === process.env.DODO_POWER_PRODUCT_ID) {
         await userRef.update({
-          purchasedCredits: (currentData.purchasedCredits || 0) + 50,
+          purchasedCredits: (userData.purchasedCredits || 0) + 50,
         });
-        console.log("Added 50 credits");
-      }
 
-      else {
-        console.log("Unknown product ID:", productId);
+        console.log("Added 50 purchased credits");
       }
+    }
+
+    /* ================= SUBSCRIPTION CANCELED ================= */
+
+    if (payload.type === "subscription.canceled") {
+      await userRef.update({
+        subscriptionTier: "free",
+        subscriptionCredits: 0,
+        subscriptionUsed: 0,
+      });
+
+      console.log("Subscription canceled → downgraded to free");
     }
 
     res.status(200).send("Webhook processed");
@@ -153,7 +180,10 @@ app.get("/", (req, res) => {
   res.send("Backend running");
 });
 
+/* ================= START SERVER ================= */
+
 const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
