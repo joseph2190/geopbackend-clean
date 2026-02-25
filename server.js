@@ -62,7 +62,6 @@ app.post("/create-checkout-session", async (req, res) => {
       ],
       customer: {
         email: userData.email,
-        name: userData.email,
       },
       metadata: {
         firebaseUid,
