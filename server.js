@@ -73,7 +73,7 @@ app.post("/create-checkout-session", async (req, res) => {
           firebaseUid: firebaseUid,
           productId: productId,
         },
-        return_url: "https://your-frontend-domain.com/payment-success",
+        return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
       }),
     });
 
