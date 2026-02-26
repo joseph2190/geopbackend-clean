@@ -53,7 +53,7 @@ app.post("/create-checkout-session", async (req, res) => {
 
     console.log("Creating Dodo session for:", userEmail);
 
-    const response = await fetch("https://api.dodopayments.com/v1/checkout_sessions", {
+    const response = await fetch("https://api.dodopayments.com/checkout_sessions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
