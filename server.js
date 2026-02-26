@@ -2,13 +2,14 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
-const DodoPayments = require("dodopayments");
+const DodoPayments = require("dodopayments").default;
 
 const app = express();
 
 /* ================= CORS ================= */
+
 app.use(cors({
-  origin: "*", // restrict later to your domain
+  origin: "*", // restrict later to your real domain
   methods: ["GET", "POST", "OPTIONS"],
 }));
 
@@ -30,7 +31,7 @@ const db = admin.firestore();
 
 const dodo = new DodoPayments({
   bearerToken: process.env.DODO_PAYMENTS_API_KEY,
-  environment: "test_mode", // change to "live_mode" when going live
+  environment: "test_mode", // change to live_mode in production
 });
 
 /* ================= CREATE CHECKOUT SESSION ================= */
@@ -91,6 +92,7 @@ app.post("/dodo-webhook", async (req, res) => {
     const productId = payload.data?.metadata?.productId;
 
     if (!firebaseUid) {
+      console.log("No firebaseUid in metadata");
       return res.status(200).send("No UID");
     }
 
@@ -98,40 +100,69 @@ app.post("/dodo-webhook", async (req, res) => {
     const userDoc = await userRef.get();
 
     if (!userDoc.exists) {
+      console.log("User not found");
       return res.status(200).send("User not found");
     }
 
     const userData = userDoc.data();
 
-    /* ================= PAYMENT SUCCEEDED OR RENEWAL ================= */
+    /* ================= PAYMENT SUCCESS OR RENEW ================= */
 
     if (
       payload.type === "payment.succeeded" ||
       payload.type === "subscription.renewed"
     ) {
 
-      /* ===== LITE SUBSCRIPTION ===== */
+      /* ===== LITE MONTHLY ===== */
       if (productId === process.env.DODO_LITE_PRODUCT_ID) {
         await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
-          subscriptionUsed: 0, // 🔁 RESET EVERY BILLING CYCLE
+          subscriptionUsed: 0,
+          subscriptionType: "monthly",
           subscriptionStartDate: new Date().toISOString(),
         });
 
-        console.log("Lite subscription activated/reset");
+        console.log("Lite monthly activated/reset");
       }
 
-      /* ===== PRO SUBSCRIPTION ===== */
+      /* ===== LITE YEARLY ===== */
+      else if (productId === process.env.DODO_LITE_YEARLY_ID) {
+        await userRef.update({
+          subscriptionTier: "lite",
+          subscriptionCredits: 15,
+          subscriptionUsed: 0,
+          subscriptionType: "yearly",
+          subscriptionStartDate: new Date().toISOString(),
+        });
+
+        console.log("Lite yearly activated/reset");
+      }
+
+      /* ===== PRO MONTHLY ===== */
       else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
         await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
           subscriptionUsed: 0,
+          subscriptionType: "monthly",
           subscriptionStartDate: new Date().toISOString(),
         });
 
-        console.log("Pro subscription activated/reset");
+        console.log("Pro monthly activated/reset");
+      }
+
+      /* ===== PRO YEARLY ===== */
+      else if (productId === process.env.DODO_PRO_YEARLY_ID) {
+        await userRef.update({
+          subscriptionTier: "pro",
+          subscriptionCredits: 50,
+          subscriptionUsed: 0,
+          subscriptionType: "yearly",
+          subscriptionStartDate: new Date().toISOString(),
+        });
+
+        console.log("Pro yearly activated/reset");
       }
 
       /* ===== STARTER PACK ===== */
@@ -151,6 +182,10 @@ app.post("/dodo-webhook", async (req, res) => {
 
         console.log("Added 50 purchased credits");
       }
+
+      else {
+        console.log("Unknown productId:", productId);
+      }
     }
 
     /* ================= SUBSCRIPTION CANCELED ================= */
@@ -160,6 +195,7 @@ app.post("/dodo-webhook", async (req, res) => {
         subscriptionTier: "free",
         subscriptionCredits: 0,
         subscriptionUsed: 0,
+        subscriptionType: null,
       });
 
       console.log("Subscription canceled → downgraded to free");
