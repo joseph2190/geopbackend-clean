@@ -136,6 +136,7 @@ app.post("/create-paypal-subscription", async (req, res) => {
           subscriber: {
             email_address: userDoc.data().email,
           },
+		  custom_id: firebaseUid,
           application_context: {
             brand_name: "GeoPixel",
             user_action: "SUBSCRIBE_NOW",
@@ -241,19 +242,18 @@ app.post("/paypal-webhook", async (req, res) => {
 
     if (event.event_type === "BILLING.SUBSCRIPTION.ACTIVATED") {
 
-      const email = event.resource.subscriber.email_address;
+      const firebaseUid = event.resource.custom_id;
       const planId = event.resource.plan_id;
 
       console.log("PLAN ID FROM PAYPAL:", planId);
       console.log("USER EMAIL:", email);
 
-      const snapshot = await db.collection("users")
-        .where("email", "==", email)
-        .get();
+      const userRef = db.collection("users").doc(firebaseUid);
+      const userDoc = await userRef.get();
 
-      if (snapshot.empty) {
-        console.log("User not found in Firestore");
-        return res.status(200).send("User not found");
+      if (!userDoc.exists) {
+      console.log("User not found in Firestore");
+       return res.status(200).send("User not found");
       }
 
       const userRef = snapshot.docs[0].ref;
