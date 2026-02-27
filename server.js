@@ -237,18 +237,24 @@ app.post("/paypal-webhook", async (req, res) => {
     const event = req.body;
 
     console.log("====== PAYPAL WEBHOOK ======");
-    console.log("Event:", event.event_type);
+    console.log("EVENT TYPE:", event.event_type);
 
     if (event.event_type === "BILLING.SUBSCRIPTION.ACTIVATED") {
 
       const email = event.resource.subscriber.email_address;
       const planId = event.resource.plan_id;
 
+      console.log("PLAN ID FROM PAYPAL:", planId);
+      console.log("USER EMAIL:", email);
+
       const snapshot = await db.collection("users")
         .where("email", "==", email)
         .get();
 
-      if (snapshot.empty) return res.status(200).send("User not found");
+      if (snapshot.empty) {
+        console.log("User not found in Firestore");
+        return res.status(200).send("User not found");
+      }
 
       const userRef = snapshot.docs[0].ref;
 
@@ -256,6 +262,7 @@ app.post("/paypal-webhook", async (req, res) => {
         planId === process.env.PAYPAL_LITE_MONTHLY_PLAN ||
         planId === process.env.PAYPAL_LITE_YEARLY_PLAN
       ) {
+        console.log("Matched LITE plan");
         await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
@@ -268,6 +275,7 @@ app.post("/paypal-webhook", async (req, res) => {
         planId === process.env.PAYPAL_PRO_MONTHLY_PLAN ||
         planId === process.env.PAYPAL_PRO_YEARLY_PLAN
       ) {
+        console.log("Matched PRO plan");
         await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
@@ -276,7 +284,11 @@ app.post("/paypal-webhook", async (req, res) => {
         });
       }
 
-      console.log("PayPal subscription activated successfully");
+      else {
+        console.log("No matching plan ID found");
+      }
+
+      console.log("PayPal subscription processed");
     }
 
     res.status(200).send("OK");
