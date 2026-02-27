@@ -3,7 +3,6 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const DodoPayments = require("dodopayments");
-const fetch = require("node-fetch");
 
 const app = express();
 
