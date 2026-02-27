@@ -246,17 +246,20 @@ app.post("/paypal-webhook", async (req, res) => {
       const planId = event.resource.plan_id;
 
       console.log("PLAN ID FROM PAYPAL:", planId);
-      console.log("USER EMAIL:", email);
+      console.log("FIREBASE UID:", firebaseUid);
+
+      if (!firebaseUid) {
+        console.log("Missing firebaseUid in webhook");
+        return res.status(200).send("Missing UID");
+      }
 
       const userRef = db.collection("users").doc(firebaseUid);
       const userDoc = await userRef.get();
 
       if (!userDoc.exists) {
-      console.log("User not found in Firestore");
-       return res.status(200).send("User not found");
+        console.log("User not found in Firestore");
+        return res.status(200).send("User not found");
       }
-
-      const userRef = snapshot.docs[0].ref;
 
       if (
         planId === process.env.PAYPAL_LITE_MONTHLY_PLAN ||
