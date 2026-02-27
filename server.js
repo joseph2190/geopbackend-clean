@@ -2,21 +2,20 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
-const DodoPayments = require("dodopayments").default;
+const DodoPayments = require("dodopayments");
+const paypal = require("@paypal/checkout-server-sdk");
 
 const app = express();
 
 /* ================= CORS ================= */
-
 app.use(cors({
-  origin: "*", // restrict later to your real domain
+  origin: "*",
   methods: ["GET", "POST", "OPTIONS"],
 }));
 
 app.use(express.json());
 
 /* ================= FIREBASE ================= */
-
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -28,13 +27,24 @@ admin.initializeApp({
 const db = admin.firestore();
 
 /* ================= DODO ================= */
-
 const dodo = new DodoPayments({
   bearerToken: process.env.DODO_PAYMENTS_API_KEY,
-  environment: "test_mode", // change to live_mode in production
+  environment: "test_mode",
 });
 
-/* ================= CREATE CHECKOUT SESSION ================= */
+/* ================= PAYPAL ================= */
+function paypalEnvironment() {
+  return new paypal.core.SandboxEnvironment(
+    process.env.PAYPAL_CLIENT_ID,
+    process.env.PAYPAL_SECRET
+  );
+}
+
+const paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment());
+
+/* ========================================================= */
+/* ================= CREATE DODO CHECKOUT ================== */
+/* ========================================================= */
 
 app.post("/create-checkout-session", async (req, res) => {
   try {
@@ -47,7 +57,6 @@ app.post("/create-checkout-session", async (req, res) => {
     }
 
     const userDoc = await db.collection("users").doc(firebaseUid).get();
-
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -79,7 +88,54 @@ app.post("/create-checkout-session", async (req, res) => {
   }
 });
 
-/* ================= DODO WEBHOOK ================= */
+/* ========================================================= */
+/* ================= CREATE PAYPAL SUB ===================== */
+/* ========================================================= */
+
+app.post("/create-paypal-subscription", async (req, res) => {
+  try {
+    const { firebaseUid, planId } = req.body;
+
+    if (!firebaseUid || !planId) {
+      return res.status(400).json({ error: "Missing firebaseUid or planId" });
+    }
+
+    const userDoc = await db.collection("users").doc(firebaseUid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const request = new paypal.subscriptions.SubscriptionsCreateRequest();
+    request.requestBody({
+      plan_id: planId,
+      subscriber: {
+        email_address: userDoc.data().email,
+      },
+      application_context: {
+        brand_name: "GeoPixel",
+        user_action: "SUBSCRIBE_NOW",
+        return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+        cancel_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/pricing",
+      },
+    });
+
+    const subscription = await paypalClient.execute(request);
+
+    const approveUrl = subscription.result.links.find(
+      (link) => link.rel === "approve"
+    ).href;
+
+    res.json({ approveUrl });
+
+  } catch (err) {
+    console.error("PayPal create subscription error:", err);
+    res.status(500).json({ error: "PayPal subscription failed" });
+  }
+});
+
+/* ========================================================= */
+/* ================= DODO WEBHOOK ========================== */
+/* ========================================================= */
 
 app.post("/dodo-webhook", async (req, res) => {
   try {
@@ -91,125 +147,115 @@ app.post("/dodo-webhook", async (req, res) => {
     const firebaseUid = payload.data?.metadata?.firebaseUid;
     const productId = payload.data?.metadata?.productId;
 
-    if (!firebaseUid) {
-      console.log("No firebaseUid in metadata");
-      return res.status(200).send("No UID");
-    }
+    if (!firebaseUid) return res.status(200).send("No UID");
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
-
-    if (!userDoc.exists) {
-      console.log("User not found");
-      return res.status(200).send("User not found");
-    }
+    if (!userDoc.exists) return res.status(200).send("User not found");
 
     const userData = userDoc.data();
 
-    /* ================= PAYMENT SUCCESS OR RENEW ================= */
+    if (payload.type === "payment.succeeded") {
 
-    if (
-      payload.type === "payment.succeeded" ||
-      payload.type === "subscription.renewed"
-    ) {
-
-      /* ===== LITE MONTHLY ===== */
       if (productId === process.env.DODO_LITE_PRODUCT_ID) {
         await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
           subscriptionUsed: 0,
-          subscriptionType: "monthly",
           subscriptionStartDate: new Date().toISOString(),
         });
-
-        console.log("Lite monthly activated/reset");
       }
 
-      /* ===== LITE YEARLY ===== */
-      else if (productId === process.env.DODO_LITE_YEARLY_ID) {
-        await userRef.update({
-          subscriptionTier: "lite",
-          subscriptionCredits: 15,
-          subscriptionUsed: 0,
-          subscriptionType: "yearly",
-          subscriptionStartDate: new Date().toISOString(),
-        });
-
-        console.log("Lite yearly activated/reset");
-      }
-
-      /* ===== PRO MONTHLY ===== */
       else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
         await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
           subscriptionUsed: 0,
-          subscriptionType: "monthly",
           subscriptionStartDate: new Date().toISOString(),
         });
-
-        console.log("Pro monthly activated/reset");
       }
 
-      /* ===== PRO YEARLY ===== */
-      else if (productId === process.env.DODO_PRO_YEARLY_ID) {
-        await userRef.update({
-          subscriptionTier: "pro",
-          subscriptionCredits: 50,
-          subscriptionUsed: 0,
-          subscriptionType: "yearly",
-          subscriptionStartDate: new Date().toISOString(),
-        });
-
-        console.log("Pro yearly activated/reset");
-      }
-
-      /* ===== STARTER PACK ===== */
       else if (productId === process.env.DODO_STARTER_PRODUCT_ID) {
         await userRef.update({
           purchasedCredits: (userData.purchasedCredits || 0) + 5,
         });
-
-        console.log("Added 5 purchased credits");
       }
 
-      /* ===== POWER PACK ===== */
       else if (productId === process.env.DODO_POWER_PRODUCT_ID) {
         await userRef.update({
           purchasedCredits: (userData.purchasedCredits || 0) + 50,
         });
-
-        console.log("Added 50 purchased credits");
       }
-
-      else {
-        console.log("Unknown productId:", productId);
-      }
-    }
-
-    /* ================= SUBSCRIPTION CANCELED ================= */
-
-    if (payload.type === "subscription.canceled") {
-      await userRef.update({
-        subscriptionTier: "free",
-        subscriptionCredits: 0,
-        subscriptionUsed: 0,
-        subscriptionType: null,
-      });
-
-      console.log("Subscription canceled → downgraded to free");
     }
 
     res.status(200).send("Webhook processed");
 
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("Dodo Webhook error:", err);
     res.status(200).send("Error handled safely");
   }
 });
 
-/* ================= ROOT ================= */
+/* ========================================================= */
+/* ================= PAYPAL WEBHOOK ======================== */
+/* ========================================================= */
+
+app.post("/paypal-webhook", async (req, res) => {
+  try {
+    const event = req.body;
+
+    console.log("====== PAYPAL WEBHOOK ======");
+    console.log("Event:", event.event_type);
+
+    if (event.event_type === "BILLING.SUBSCRIPTION.ACTIVATED") {
+
+      const email = event.resource.subscriber.email_address;
+      const planId = event.resource.plan_id;
+
+      const snapshot = await db.collection("users")
+        .where("email", "==", email)
+        .get();
+
+      if (snapshot.empty) return res.status(200).send("User not found");
+
+      const userRef = snapshot.docs[0].ref;
+
+      if (planId === process.env.PAYPAL_LITE_MONTHLY_PLAN ||
+          planId === process.env.PAYPAL_LITE_YEARLY_PLAN) {
+
+        await userRef.update({
+          subscriptionTier: "lite",
+          subscriptionCredits: 15,
+          subscriptionUsed: 0,
+          subscriptionStartDate: new Date().toISOString(),
+        });
+      }
+
+      else if (planId === process.env.PAYPAL_PRO_MONTHLY_PLAN ||
+               planId === process.env.PAYPAL_PRO_YEARLY_PLAN) {
+
+        await userRef.update({
+          subscriptionTier: "pro",
+          subscriptionCredits: 50,
+          subscriptionUsed: 0,
+          subscriptionStartDate: new Date().toISOString(),
+        });
+      }
+
+      console.log("PayPal subscription activated successfully");
+    }
+
+    res.status(200).send("OK");
+
+  } catch (err) {
+    console.error("PayPal webhook error:", err);
+    res.status(200).send("Error handled safely");
+  }
+});
+
+/* ========================================================= */
+/* ================= ROOT ================== */
+/* ========================================================= */
 
 app.get("/", (req, res) => {
   res.send("Backend running");

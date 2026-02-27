@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@paypal/checkout-server-sdk": "^1.0.3",
     "cors": "^2.8.6",
     "dodopayments": "^2.20.0",
     "dotenv": "^17.3.1",
