@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const admin = require("firebase-admin");
 const DodoPayments = require("dodopayments");
-const paypal = require("@paypal/checkout-server-sdk");
+const fetch = require("node-fetch");
 
 const app = express();
 
@@ -31,16 +31,6 @@ const dodo = new DodoPayments({
   bearerToken: process.env.DODO_PAYMENTS_API_KEY,
   environment: "test_mode",
 });
-
-/* ================= PAYPAL ================= */
-function paypalEnvironment() {
-  return new paypal.core.SandboxEnvironment(
-    process.env.PAYPAL_CLIENT_ID,
-    process.env.PAYPAL_SECRET
-  );
-}
-
-const paypalClient = new paypal.core.PayPalHttpClient(paypalEnvironment());
 
 /* ========================================================= */
 /* ================= CREATE DODO CHECKOUT ================== */
@@ -105,23 +95,66 @@ app.post("/create-paypal-subscription", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const request = new paypal.subscriptions.SubscriptionsCreateRequest();
-    request.requestBody({
-      plan_id: planId,
-      subscriber: {
-        email_address: userDoc.data().email,
-      },
-      application_context: {
-        brand_name: "GeoPixel",
-        user_action: "SUBSCRIBE_NOW",
-        return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
-        cancel_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/pricing",
-      },
-    });
+    /* ===== 1. GET ACCESS TOKEN ===== */
 
-    const subscription = await paypalClient.execute(request);
+    const auth = Buffer.from(
+      process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET
+    ).toString("base64");
 
-    const approveUrl = subscription.result.links.find(
+    const tokenRes = await fetch(
+      "https://api-m.sandbox.paypal.com/v1/oauth2/token",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "grant_type=client_credentials",
+      }
+    );
+
+    const tokenData = await tokenRes.json();
+
+    if (!tokenData.access_token) {
+      console.error("PayPal token error:", tokenData);
+      return res.status(500).json({ error: "PayPal auth failed" });
+    }
+
+    const accessToken = tokenData.access_token;
+
+    /* ===== 2. CREATE SUBSCRIPTION ===== */
+
+    const subRes = await fetch(
+      "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plan_id: planId,
+          subscriber: {
+            email_address: userDoc.data().email,
+          },
+          application_context: {
+            brand_name: "GeoPixel",
+            user_action: "SUBSCRIBE_NOW",
+            return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+            cancel_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/pricing",
+          },
+        }),
+      }
+    );
+
+    const subData = await subRes.json();
+
+    if (!subData.links) {
+      console.error("PayPal subscription error:", subData);
+      return res.status(500).json({ error: "PayPal subscription failed" });
+    }
+
+    const approveUrl = subData.links.find(
       (link) => link.rel === "approve"
     ).href;
 
@@ -220,9 +253,10 @@ app.post("/paypal-webhook", async (req, res) => {
 
       const userRef = snapshot.docs[0].ref;
 
-      if (planId === process.env.PAYPAL_LITE_MONTHLY_PLAN ||
-          planId === process.env.PAYPAL_LITE_YEARLY_PLAN) {
-
+      if (
+        planId === process.env.PAYPAL_LITE_MONTHLY_PLAN ||
+        planId === process.env.PAYPAL_LITE_YEARLY_PLAN
+      ) {
         await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
@@ -231,9 +265,10 @@ app.post("/paypal-webhook", async (req, res) => {
         });
       }
 
-      else if (planId === process.env.PAYPAL_PRO_MONTHLY_PLAN ||
-               planId === process.env.PAYPAL_PRO_YEARLY_PLAN) {
-
+      else if (
+        planId === process.env.PAYPAL_PRO_MONTHLY_PLAN ||
+        planId === process.env.PAYPAL_PRO_YEARLY_PLAN
+      ) {
         await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
@@ -253,9 +288,7 @@ app.post("/paypal-webhook", async (req, res) => {
   }
 });
 
-/* ========================================================= */
-/* ================= ROOT ================== */
-/* ========================================================= */
+/* ================= ROOT ================= */
 
 app.get("/", (req, res) => {
   res.send("Backend running");
