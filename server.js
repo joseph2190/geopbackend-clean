@@ -29,7 +29,7 @@ const dodo = new DodoPayments({
 });
 
 /* ===================================================== */
-/* ================= UTILITY HELPERS =================== */
+/* ================= PAYPAL HELPERS ==================== */
 /* ===================================================== */
 
 async function getPayPalAccessToken() {
@@ -37,7 +37,7 @@ async function getPayPalAccessToken() {
     process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET
   ).toString("base64");
 
-  const tokenRes = await fetch(
+  const res = await fetch(
     "https://api-m.sandbox.paypal.com/v1/oauth2/token",
     {
       method: "POST",
@@ -49,49 +49,49 @@ async function getPayPalAccessToken() {
     }
   );
 
-  const tokenData = await tokenRes.json();
-
-  if (!tokenData.access_token) {
-    throw new Error("PayPal token failed");
-  }
-
-  return tokenData.access_token;
+  const data = await res.json();
+  if (!data.access_token) throw new Error("PayPal auth failed");
+  return data.access_token;
 }
 
 async function cancelPayPalSubscription(subscriptionId) {
-  const accessToken = await getPayPalAccessToken();
+  const token = await getPayPalAccessToken();
 
-  const cancelRes = await fetch(
+  const res = await fetch(
     `https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${subscriptionId}/cancel`,
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ reason: "User upgraded plan" }),
     }
   );
 
-  if (cancelRes.status !== 204) {
-    const text = await cancelRes.text();
+  if (res.status !== 204) {
+    const text = await res.text();
     console.error("PayPal cancel failed:", text);
-    throw new Error("Failed to cancel PayPal subscription");
   }
 }
 
 async function cancelDodoSubscription(subscriptionId) {
-  await dodo.subscriptions.cancel(subscriptionId);
+  try {
+    await dodo.subscriptions.cancel(subscriptionId);
+  } catch (err) {
+    console.error("Dodo cancel failed:", err.message);
+  }
 }
 
 /* ===================================================== */
-/* ============ UNIFIED CANCEL OLD SUB ================= */
+/* ============= CANCEL OLD SUB (UNIFIED) ============== */
 /* ===================================================== */
 
 async function cancelOldSubscription(userData) {
   if (!userData.subscriptionId || !userData.subscriptionProvider) return;
 
-  console.log("Cancelling old subscription:",
+  console.log(
+    "Cancelling old:",
     userData.subscriptionProvider,
     userData.subscriptionId
   );
@@ -106,7 +106,40 @@ async function cancelOldSubscription(userData) {
 }
 
 /* ===================================================== */
-/* ================= CREATE PAYPAL SUB ================= */
+/* ================= DODO SUBSCRIBE ==================== */
+/* (Keeps old route name for frontend compatibility)    */
+/* ===================================================== */
+
+app.post("/create-checkout-session", async (req, res) => {
+  try {
+    const { firebaseUid, productId } = req.body;
+
+    const userRef = db.collection("users").doc(firebaseUid);
+    const userDoc = await userRef.get();
+    if (!userDoc.exists)
+      return res.status(404).json({ error: "User not found" });
+
+    const userData = userDoc.data();
+
+    // Cancel previous subscription (any provider)
+    await cancelOldSubscription(userData);
+
+    const session = await dodo.checkoutSessions.create({
+      product_cart: [{ product_id: productId, quantity: 1 }],
+      customer: { email: userData.email },
+      metadata: { firebaseUid },
+      return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+    });
+
+    res.json({ checkoutUrl: session.checkout_url });
+  } catch (err) {
+    console.error("Dodo subscription error:", err);
+    res.status(500).json({ error: "Dodo subscription failed" });
+  }
+});
+
+/* ===================================================== */
+/* ================= PAYPAL SUBSCRIBE ================== */
 /* ===================================================== */
 
 app.post("/create-paypal-subscription", async (req, res) => {
@@ -115,24 +148,21 @@ app.post("/create-paypal-subscription", async (req, res) => {
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
-
-    if (!userDoc.exists) {
+    if (!userDoc.exists)
       return res.status(404).json({ error: "User not found" });
-    }
 
     const userData = userDoc.data();
 
-    // Cancel previous subscription (any provider)
     await cancelOldSubscription(userData);
 
-    const accessToken = await getPayPalAccessToken();
+    const token = await getPayPalAccessToken();
 
     const subRes = await fetch(
       "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${accessToken}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
@@ -152,54 +182,14 @@ app.post("/create-paypal-subscription", async (req, res) => {
     );
 
     const subData = await subRes.json();
-
-    if (!subData.links) {
-      console.error(subData);
-      return res.status(500).json({ error: "Subscription failed" });
-    }
+    if (!subData.links)
+      return res.status(500).json({ error: "PayPal failed" });
 
     const approveUrl = subData.links.find(l => l.rel === "approve").href;
-
     res.json({ approveUrl });
-
   } catch (err) {
     console.error("PayPal create error:", err);
     res.status(500).json({ error: "PayPal subscription failed" });
-  }
-});
-
-/* ===================================================== */
-/* ================= CREATE DODO SUB =================== */
-/* ===================================================== */
-
-app.post("/create-dodo-subscription", async (req, res) => {
-  try {
-    const { firebaseUid, productId } = req.body;
-
-    const userRef = db.collection("users").doc(firebaseUid);
-    const userDoc = await userRef.get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const userData = userDoc.data();
-
-    // Cancel previous subscription (any provider)
-    await cancelOldSubscription(userData);
-
-    const session = await dodo.checkoutSessions.create({
-      product_cart: [{ product_id: productId, quantity: 1 }],
-      customer: { email: userData.email },
-      metadata: { firebaseUid },
-      return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
-    });
-
-    res.json({ checkoutUrl: session.checkout_url });
-
-  } catch (err) {
-    console.error("Dodo create error:", err);
-    res.status(500).json({ error: "Dodo subscription failed" });
   }
 });
 
@@ -223,7 +213,6 @@ app.post("/paypal-webhook", async (req, res) => {
     const userRef = db.collection("users").doc(firebaseUid);
 
     if (eventType === "BILLING.SUBSCRIPTION.ACTIVATED") {
-
       let tier = "free";
       let credits = 5;
 
@@ -270,7 +259,6 @@ app.post("/paypal-webhook", async (req, res) => {
     }
 
     res.status(200).send("OK");
-
   } catch (err) {
     console.error("PayPal webhook error:", err);
     res.status(200).send("Handled");
@@ -287,15 +275,15 @@ app.post("/dodo-webhook", async (req, res) => {
 
     const firebaseUid = payload.data?.metadata?.firebaseUid;
     const subscriptionId = payload.data?.id;
+    const eventType = payload.type;
 
     if (!firebaseUid) return res.status(200).send("No UID");
 
     const userRef = db.collection("users").doc(firebaseUid);
 
-    if (payload.type === "subscription.active") {
-
+    if (eventType === "subscription.active") {
       await userRef.update({
-        subscriptionTier: "lite", // map properly per productId if needed
+        subscriptionTier: "lite", // map by product if needed
         subscriptionCredits: 15,
         subscriptionUsed: 0,
         subscriptionStartDate: new Date().toISOString(),
@@ -305,7 +293,7 @@ app.post("/dodo-webhook", async (req, res) => {
       });
     }
 
-    if (payload.type === "subscription.canceled") {
+    if (eventType === "subscription.canceled") {
       await userRef.update({
         subscriptionTier: "free",
         subscriptionCredits: 5,
@@ -317,7 +305,6 @@ app.post("/dodo-webhook", async (req, res) => {
     }
 
     res.status(200).send("OK");
-
   } catch (err) {
     console.error("Dodo webhook error:", err);
     res.status(200).send("Handled");
