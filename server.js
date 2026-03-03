@@ -32,52 +32,6 @@ const dodo = new DodoPayments({
 });
 
 /* ========================================================= */
-/* ================= CREATE DODO CHECKOUT ================== */
-/* ========================================================= */
-
-app.post("/create-checkout-session", async (req, res) => {
-  try {
-    console.log("=== CREATE CHECKOUT SESSION CALLED ===");
-
-    const { firebaseUid, productId } = req.body;
-
-    if (!firebaseUid || !productId) {
-      return res.status(400).json({ error: "Missing firebaseUid or productId" });
-    }
-
-    const userDoc = await db.collection("users").doc(firebaseUid).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const userData = userDoc.data();
-
-    const session = await dodo.checkoutSessions.create({
-      product_cart: [
-        {
-          product_id: productId,
-          quantity: 1,
-        },
-      ],
-      customer: {
-        email: userData.email,
-      },
-      metadata: {
-        firebaseUid,
-        productId,
-      },
-      return_url: "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
-    });
-
-    res.json({ checkoutUrl: session.checkout_url });
-
-  } catch (err) {
-    console.error("Checkout session error:", err);
-    res.status(500).json({ error: "Session creation failed" });
-  }
-});
-
-/* ========================================================= */
 /* ================= CREATE PAYPAL SUB ===================== */
 /* ========================================================= */
 
@@ -89,12 +43,16 @@ app.post("/create-paypal-subscription", async (req, res) => {
       return res.status(400).json({ error: "Missing firebaseUid or planId" });
     }
 
-    const userDoc = await db.collection("users").doc(firebaseUid).get();
+    const userRef = db.collection("users").doc(firebaseUid);
+    const userDoc = await userRef.get();
+
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    /* ===== 1. GET ACCESS TOKEN ===== */
+    const userData = userDoc.data();
+
+    /* ================= GET ACCESS TOKEN ================= */
 
     const auth = Buffer.from(
       process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET
@@ -121,7 +79,35 @@ app.post("/create-paypal-subscription", async (req, res) => {
 
     const accessToken = tokenData.access_token;
 
-    /* ===== 2. CREATE SUBSCRIPTION ===== */
+    /* ================= CANCEL OLD SUB IF EXISTS ================= */
+
+    if (userData.paypalSubscriptionId) {
+      console.log("Cancelling old subscription:", userData.paypalSubscriptionId);
+
+      const cancelRes = await fetch(
+        `https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${userData.paypalSubscriptionId}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            reason: "User upgraded subscription",
+          }),
+        }
+      );
+
+      console.log("Cancel status:", cancelRes.status);
+
+      if (cancelRes.status !== 204) {
+        const cancelText = await cancelRes.text();
+        console.error("Cancel failed:", cancelText);
+        return res.status(500).json({ error: "Failed to cancel previous subscription" });
+      }
+    }
+
+    /* ================= CREATE NEW SUBSCRIPTION ================= */
 
     const subRes = await fetch(
       "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
@@ -133,10 +119,10 @@ app.post("/create-paypal-subscription", async (req, res) => {
         },
         body: JSON.stringify({
           plan_id: planId,
+          custom_id: firebaseUid,
           subscriber: {
-            email_address: userDoc.data().email,
+            email_address: userData.email,
           },
-		  custom_id: firebaseUid,
           application_context: {
             brand_name: "GeoPixel",
             user_action: "SUBSCRIBE_NOW",
@@ -151,81 +137,16 @@ app.post("/create-paypal-subscription", async (req, res) => {
 
     if (!subData.links) {
       console.error("PayPal subscription error:", subData);
-      return res.status(500).json({ error: "PayPal subscription failed" });
+      return res.status(500).json({ error: "Subscription creation failed" });
     }
 
-    const approveUrl = subData.links.find(
-      (link) => link.rel === "approve"
-    ).href;
+    const approveUrl = subData.links.find(link => link.rel === "approve").href;
 
     res.json({ approveUrl });
 
   } catch (err) {
-    console.error("PayPal create subscription error:", err);
+    console.error("Create PayPal subscription error:", err);
     res.status(500).json({ error: "PayPal subscription failed" });
-  }
-});
-
-/* ========================================================= */
-/* ================= DODO WEBHOOK ========================== */
-/* ========================================================= */
-
-app.post("/dodo-webhook", async (req, res) => {
-  try {
-    const payload = req.body;
-
-    console.log("====== DODO WEBHOOK RECEIVED ======");
-    console.log("Event Type:", payload.type);
-
-    const firebaseUid = payload.data?.metadata?.firebaseUid;
-    const productId = payload.data?.metadata?.productId;
-
-    if (!firebaseUid) return res.status(200).send("No UID");
-
-    const userRef = db.collection("users").doc(firebaseUid);
-    const userDoc = await userRef.get();
-    if (!userDoc.exists) return res.status(200).send("User not found");
-
-    const userData = userDoc.data();
-
-    if (payload.type === "payment.succeeded") {
-
-      if (productId === process.env.DODO_LITE_PRODUCT_ID) {
-        await userRef.update({
-          subscriptionTier: "lite",
-          subscriptionCredits: 15,
-          subscriptionUsed: 0,
-          subscriptionStartDate: new Date().toISOString(),
-        });
-      }
-
-      else if (productId === process.env.DODO_PRO_PRODUCT_ID) {
-        await userRef.update({
-          subscriptionTier: "pro",
-          subscriptionCredits: 50,
-          subscriptionUsed: 0,
-          subscriptionStartDate: new Date().toISOString(),
-        });
-      }
-
-      else if (productId === process.env.DODO_STARTER_PRODUCT_ID) {
-        await userRef.update({
-          purchasedCredits: (userData.purchasedCredits || 0) + 5,
-        });
-      }
-
-      else if (productId === process.env.DODO_POWER_PRODUCT_ID) {
-        await userRef.update({
-          purchasedCredits: (userData.purchasedCredits || 0) + 50,
-        });
-      }
-    }
-
-    res.status(200).send("Webhook processed");
-
-  } catch (err) {
-    console.error("Dodo Webhook error:", err);
-    res.status(200).send("Error handled safely");
   }
 });
 
@@ -238,48 +159,32 @@ app.post("/paypal-webhook", async (req, res) => {
     const event = req.body;
 
     console.log("====== PAYPAL WEBHOOK ======");
-    console.log("EVENT TYPE:", event.event_type);
+    console.log("EVENT:", event.event_type);
 
     const eventType = event.event_type;
     const resource = event.resource;
 
-    // Safety guard
-    if (!resource) {
-      console.log("No resource in webhook");
-      return res.status(200).send("No resource");
-    }
+    if (!resource) return res.status(200).send("No resource");
 
     const firebaseUid = resource.custom_id;
     const planId = resource.plan_id;
     const subscriptionId = resource.id;
 
-    if (!firebaseUid) {
-      console.log("Missing firebaseUid (custom_id)");
-      return res.status(200).send("Missing UID");
-    }
+    if (!firebaseUid) return res.status(200).send("No UID");
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
 
-    if (!userDoc.exists) {
-      console.log("User not found in Firestore");
-      return res.status(200).send("User not found");
-    }
+    if (!userDoc.exists) return res.status(200).send("User not found");
 
-    /* ========================================================= */
-    /* ================= SUBSCRIPTION ACTIVATED ================= */
-    /* ========================================================= */
+    /* ===== ACTIVATED ===== */
 
     if (eventType === "BILLING.SUBSCRIPTION.ACTIVATED") {
-
-      console.log("PLAN ID:", planId);
 
       if (
         planId === process.env.PAYPAL_LITE_MONTHLY_PLAN ||
         planId === process.env.PAYPAL_LITE_YEARLY_PLAN
       ) {
-        console.log("Matched LITE plan");
-
         await userRef.update({
           subscriptionTier: "lite",
           subscriptionCredits: 15,
@@ -293,8 +198,6 @@ app.post("/paypal-webhook", async (req, res) => {
         planId === process.env.PAYPAL_PRO_MONTHLY_PLAN ||
         planId === process.env.PAYPAL_PRO_YEARLY_PLAN
       ) {
-        console.log("Matched PRO plan");
-
         await userRef.update({
           subscriptionTier: "pro",
           subscriptionCredits: 50,
@@ -303,24 +206,15 @@ app.post("/paypal-webhook", async (req, res) => {
           paypalSubscriptionId: subscriptionId,
         });
       }
-
-      else {
-        console.log("No matching PayPal plan found");
-      }
     }
 
-    /* ========================================================= */
-    /* ================= SUBSCRIPTION CANCELLED ================= */
-    /* ========================================================= */
+    /* ===== CANCEL / EXPIRE / SUSPEND ===== */
 
     if (
       eventType === "BILLING.SUBSCRIPTION.CANCELLED" ||
-      eventType === "BILLING.SUBSCRIPTION.SUSPENDED" ||
-      eventType === "BILLING.SUBSCRIPTION.EXPIRED"
+      eventType === "BILLING.SUBSCRIPTION.EXPIRED" ||
+      eventType === "BILLING.SUBSCRIPTION.SUSPENDED"
     ) {
-
-      console.log("Subscription cancelled/suspended/expired");
-
       await userRef.update({
         subscriptionTier: "free",
         subscriptionCredits: 5,
@@ -332,7 +226,7 @@ app.post("/paypal-webhook", async (req, res) => {
     res.status(200).send("OK");
 
   } catch (err) {
-    console.error("PayPal webhook error:", err);
+    console.error("Webhook error:", err);
     res.status(200).send("Error handled safely");
   }
 });
@@ -346,7 +240,6 @@ app.get("/", (req, res) => {
 /* ================= START SERVER ================= */
 
 const PORT = process.env.PORT || 10000;
-
 app.listen(PORT, () => {
   console.log("Server running on port " + PORT);
 });
