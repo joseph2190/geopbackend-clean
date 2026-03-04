@@ -108,7 +108,7 @@ async function cancelOldSubscription(userData) {
 }
 
 /* ===================================================== */
-/* ================= DODO SUBSCRIBE ==================== */
+/* ================= DODO CHECKOUT ===================== */
 /* ===================================================== */
 
 app.post("/create-checkout-session", async (req, res) => {
@@ -139,7 +139,7 @@ app.post("/create-checkout-session", async (req, res) => {
 });
 
 /* ===================================================== */
-/* ================= PAYPAL SUBSCRIBE ================== */
+/* ================= PAYPAL CREATE ===================== */
 /* ===================================================== */
 
 app.post("/create-paypal-subscription", async (req, res) => {
@@ -236,7 +236,7 @@ app.post("/paypal-webhook", async (req, res) => {
         subscriptionUsed: 0,
         subscriptionStartDate: new Date().toISOString(),
         subscriptionProvider: "paypal",
-        subscriptionId: subscriptionId,
+        subscriptionId: subscriptionId || null,
         subscriptionStatus: "active",
       });
 
@@ -280,7 +280,14 @@ app.post("/dodo-webhook", async (req, res) => {
 
     const firebaseUid = payload.data?.metadata?.firebaseUid;
     const productId = payload.data?.metadata?.productId;
-    const subscriptionId = payload.data?.id;
+
+    const subscriptionId =
+      payload.data?.subscription_id ||
+      payload.data?.subscription?.id ||
+      payload.data?.id ||
+      null;
+
+    console.log("Dodo subscriptionId:", subscriptionId);
 
     if (!firebaseUid) return res.status(200).send("No UID");
 
