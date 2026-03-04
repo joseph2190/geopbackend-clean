@@ -77,18 +77,15 @@ async function cancelPayPalSubscription(subscriptionId) {
 /* ===================================================== */
 
 async function cancelDodoSubscription(subscriptionId) {
-  await fetch(
-    `https://api.dodopayments.com/v1/subscriptions/${subscriptionId}/cancel`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.DODO_PAYMENTS_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  try {
+    await dodo.subscriptions.update(subscriptionId, {
+      status: "canceled"
+    });
 
-  console.log("Dodo subscription cancelled:", subscriptionId);
+    console.log("Dodo subscription cancelled:", subscriptionId);
+  } catch (err) {
+    console.error("Dodo cancel failed:", err.message);
+  }
 }
 
 /* ===================================================== */
