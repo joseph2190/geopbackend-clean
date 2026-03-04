@@ -149,15 +149,27 @@ app.post("/create-paypal-subscription", async (req, res) => {
   try {
     const { firebaseUid, planId } = req.body;
 
+    if (!firebaseUid || !planId) {
+      return res.status(400).json({ error: "Missing firebaseUid or planId" });
+    }
+
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
-    if (!userDoc.exists)
+
+    if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
+    }
 
     const userData = userDoc.data();
 
+    console.log("Creating PayPal subscription for:", userData.email);
+    console.log("Using Plan ID:", planId);
+
+    /* ================= GET ACCESS TOKEN ================= */
 
     const token = await getPayPalAccessToken();
+
+    /* ================= CREATE SUBSCRIPTION ================= */
 
     const subRes = await fetch(
       "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
@@ -170,7 +182,9 @@ app.post("/create-paypal-subscription", async (req, res) => {
         body: JSON.stringify({
           plan_id: planId,
           custom_id: firebaseUid,
-          subscriber: { email_address: userData.email },
+          subscriber: {
+            email_address: userData.email,
+          },
           application_context: {
             brand_name: "GeoPixel",
             user_action: "SUBSCRIBE_NOW",
@@ -184,14 +198,51 @@ app.post("/create-paypal-subscription", async (req, res) => {
     );
 
     const subData = await subRes.json();
-    if (!subData.links)
-      return res.status(500).json({ error: "PayPal failed" });
 
-    const approveUrl = subData.links.find(l => l.rel === "approve").href;
-    res.json({ approveUrl });
+    console.log(
+      "PayPal subscription response:",
+      JSON.stringify(subData, null, 2)
+    );
+
+    /* ================= ERROR HANDLING ================= */
+
+    if (!subRes.ok) {
+      console.error("PayPal API error:", subData);
+      return res.status(500).json({
+        error: "PayPal API error",
+        details: subData,
+      });
+    }
+
+    if (!subData || !subData.links) {
+      console.error("Invalid PayPal response structure:", subData);
+      return res.status(500).json({
+        error: "Invalid PayPal response",
+      });
+    }
+
+    const approveLink = subData.links.find(
+      (link) => link.rel === "approve"
+    );
+
+    if (!approveLink || !approveLink.href) {
+      console.error("Approve link not found in response:", subData);
+      return res.status(500).json({
+        error: "Approval URL not returned by PayPal",
+      });
+    }
+
+    /* ================= SUCCESS ================= */
+
+    res.json({
+      approveUrl: approveLink.href,
+    });
+
   } catch (err) {
-    console.error("PayPal create error:", err);
-    res.status(500).json({ error: "PayPal subscription failed" });
+    console.error("PayPal create subscription error:", err);
+    res.status(500).json({
+      error: "Internal PayPal subscription error",
+    });
   }
 });
 
