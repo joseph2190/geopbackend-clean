@@ -494,7 +494,9 @@ app.post("/dodo-webhook", async (req, res) => {
 /* ================= START SERVER ================= */
 
 const PORT = process.env.PORT || 10000;
-
+app.get("/", (req, res) => {
+  res.send("GeoPixel Backend Running");
+});
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
