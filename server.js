@@ -216,10 +216,15 @@ app.post("/paypal-webhook", async (req, res) => {
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
+    if (!userDoc.exists) return res.status(200).send("User not found");
+
     const userData = userDoc.data();
+
+    /* ================= ACTIVATION ================= */
 
     if (eventType === "BILLING.SUBSCRIPTION.ACTIVATED") {
 
+      // Ignore if another provider is active
       if (
         userData.subscriptionProvider &&
         userData.subscriptionProvider !== "paypal"
@@ -260,24 +265,34 @@ app.post("/paypal-webhook", async (req, res) => {
       console.log("PayPal activated:", tier);
     }
 
+    /* ================= CANCELLATION ================= */
+
     if (
       eventType === "BILLING.SUBSCRIPTION.CANCELLED" ||
       eventType === "BILLING.SUBSCRIPTION.EXPIRED" ||
       eventType === "BILLING.SUBSCRIPTION.SUSPENDED"
     ) {
-      await userRef.update({
-        subscriptionTier: "free",
-        subscriptionCredits: 5,
-        subscriptionUsed: 0,
-        subscriptionProvider: null,
-        subscriptionId: null,
-        subscriptionStatus: "cancelled",
-      });
 
-      console.log("PayPal cancelled");
+      // 🔥 CRITICAL FIX: Only downgrade if THIS subscription is current
+      if (userData.subscriptionId === subscriptionId) {
+
+        await userRef.update({
+          subscriptionTier: "free",
+          subscriptionCredits: 5,
+          subscriptionUsed: 0,
+          subscriptionProvider: null,
+          subscriptionId: null,
+          subscriptionStatus: "cancelled",
+        });
+
+        console.log("PayPal cancelled (active subscription)");
+      } else {
+        console.log("Ignored old PayPal cancellation");
+      }
     }
 
     res.status(200).send("OK");
+
   } catch (err) {
     console.error("PayPal webhook error:", err);
     res.status(200).send("Handled");
