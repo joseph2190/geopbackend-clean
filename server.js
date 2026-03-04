@@ -319,15 +319,21 @@ app.post("/dodo-webhook", async (req, res) => {
       let tier = "free";
       let credits = 5;
 
-      if (productId === process.env.DODO_LITE_PRODUCT_ID) {
-        tier = "lite";
-        credits = 15;
-      }
+     if (
+  productId === process.env.DODO_LITE_MONTHLY_PRODUCT_ID ||
+  productId === process.env.DODO_LITE_YEARLY_PRODUCT_ID
+) {
+  tier = "lite";
+  credits = 15;
+}
 
-      if (productId === process.env.DODO_PRO_PRODUCT_ID) {
-        tier = "pro";
-        credits = 50;
-      }
+if (
+  productId === process.env.DODO_PRO_MONTHLY_PRODUCT_ID ||
+  productId === process.env.DODO_PRO_YEARLY_PRODUCT_ID
+) {
+  tier = "pro";
+  credits = 50;
+}
 
       await userRef.update({
         subscriptionTier: tier,
