@@ -79,7 +79,7 @@ async function cancelPayPalSubscription(subscriptionId) {
 async function cancelDodoSubscription(subscriptionId) {
   try {
     await dodo.subscriptions.update(subscriptionId, {
-      status: "canceled"
+      status: "cancelled"
     });
 
     console.log("Dodo subscription cancelled:", subscriptionId);
