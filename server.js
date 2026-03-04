@@ -125,7 +125,6 @@ app.post("/create-checkout-session", async (req, res) => {
 
     const userData = userDoc.data();
 
-    await cancelOldSubscription(userData);
 
     const session = await dodo.checkoutSessions.create({
       product_cart: [{ product_id: productId, quantity: 1 }],
@@ -157,7 +156,6 @@ app.post("/create-paypal-subscription", async (req, res) => {
 
     const userData = userDoc.data();
 
-    await cancelOldSubscription(userData);
 
     const token = await getPayPalAccessToken();
 
@@ -224,15 +222,6 @@ app.post("/paypal-webhook", async (req, res) => {
 
     if (eventType === "BILLING.SUBSCRIPTION.ACTIVATED") {
 
-      // Ignore if another provider is active
-      if (
-        userData.subscriptionProvider &&
-        userData.subscriptionProvider !== "paypal"
-      ) {
-        console.log("Ignoring PayPal activation (another provider active)");
-        return res.status(200).send("Ignored");
-      }
-
       let tier = "free";
       let credits = 5;
 
@@ -252,6 +241,11 @@ app.post("/paypal-webhook", async (req, res) => {
         credits = 50;
       }
 
+      // 🔥 SAVE OLD SUB BEFORE OVERWRITING
+      const oldProvider = userData.subscriptionProvider;
+      const oldSubscriptionId = userData.subscriptionId;
+
+      // Activate new
       await userRef.update({
         subscriptionTier: tier,
         subscriptionCredits: credits,
@@ -263,6 +257,23 @@ app.post("/paypal-webhook", async (req, res) => {
       });
 
       console.log("PayPal activated:", tier);
+
+      // 🔥 NOW cancel old AFTER activation
+      if (
+        oldSubscriptionId &&
+        oldProvider &&
+        oldSubscriptionId !== subscriptionId
+      ) {
+        console.log("Cancelling previous subscription after activation");
+
+        if (oldProvider === "paypal") {
+          await cancelPayPalSubscription(oldSubscriptionId);
+        }
+
+        if (oldProvider === "dodo") {
+          await cancelDodoSubscription(oldSubscriptionId);
+        }
+      }
     }
 
     /* ================= CANCELLATION ================= */
@@ -273,7 +284,7 @@ app.post("/paypal-webhook", async (req, res) => {
       eventType === "BILLING.SUBSCRIPTION.SUSPENDED"
     ) {
 
-      // 🔥 CRITICAL FIX: Only downgrade if THIS subscription is current
+      // Only downgrade if this is current active subscription
       if (userData.subscriptionId === subscriptionId) {
 
         await userRef.update({
@@ -286,6 +297,7 @@ app.post("/paypal-webhook", async (req, res) => {
         });
 
         console.log("PayPal cancelled (active subscription)");
+
       } else {
         console.log("Ignored old PayPal cancellation");
       }
@@ -307,49 +319,62 @@ app.post("/dodo-webhook", async (req, res) => {
   try {
     const payload = req.body;
 
+    console.log("====== DODO WEBHOOK RECEIVED ======");
+    console.log("TYPE:", payload.type);
+
     const firebaseUid = payload.data?.metadata?.firebaseUid;
     const productId = payload.data?.metadata?.productId;
 
     const subscriptionId =
       payload.data?.subscription_id ||
       payload.data?.subscription?.id ||
+      payload.data?.id ||
       null;
 
-    if (!firebaseUid) return res.status(200).send("No UID");
+    if (!firebaseUid) {
+      console.log("No firebaseUid");
+      return res.status(200).send("No UID");
+    }
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
+    if (!userDoc.exists) {
+      console.log("User not found");
+      return res.status(200).send("User not found");
+    }
+
     const userData = userDoc.data();
 
-    if (payload.type === "payment.succeeded") {
+    /* ===================================================== */
+    /* ================= ACTIVATE SUBSCRIPTION ============= */
+    /* ===================================================== */
 
-      if (
-        userData.subscriptionProvider &&
-        userData.subscriptionProvider !== "dodo"
-      ) {
-        console.log("Ignoring Dodo activation (another provider active)");
-        return res.status(200).send("Ignored");
-      }
+    if (payload.type === "payment.succeeded") {
 
       let tier = "free";
       let credits = 5;
 
-     if (
-  productId === process.env.DODO_LITE_PRODUCT_ID ||
-  productId === process.env.DODO_LITE_YEARLY_ID
-) {
-  tier = "lite";
-  credits = 15;
-}
+      if (
+        productId === process.env.DODO_LITE_PRODUCT_ID ||
+        productId === process.env.DODO_LITE_YEARLY_ID
+      ) {
+        tier = "lite";
+        credits = 15;
+      }
 
-if (
-  productId === process.env.DODO_PRO_PRODUCT_ID ||
-  productId === process.env.DODO_PRO_YEARLY_ID
-) {
-  tier = "pro";
-  credits = 50;
-}
+      if (
+        productId === process.env.DODO_PRO_PRODUCT_ID ||
+        productId === process.env.DODO_PRO_YEARLY_ID
+      ) {
+        tier = "pro";
+        credits = 50;
+      }
 
+      // 🔥 Save previous subscription before overwriting
+      const oldProvider = userData.subscriptionProvider;
+      const oldSubscriptionId = userData.subscriptionId;
+
+      // Activate new subscription
       await userRef.update({
         subscriptionTier: tier,
         subscriptionCredits: credits,
@@ -361,25 +386,57 @@ if (
       });
 
       console.log("Dodo activated:", tier);
+
+      // 🔥 Cancel old subscription AFTER activation
+      if (
+        oldSubscriptionId &&
+        oldProvider &&
+        oldSubscriptionId !== subscriptionId
+      ) {
+        console.log("Cancelling previous subscription after activation");
+
+        if (oldProvider === "paypal") {
+          await cancelPayPalSubscription(oldSubscriptionId);
+        }
+
+        if (oldProvider === "dodo") {
+          await cancelDodoSubscription(oldSubscriptionId);
+        }
+      }
     }
 
-    if (payload.type === "subscription.canceled") {
-      await userRef.update({
-        subscriptionTier: "free",
-        subscriptionCredits: 5,
-        subscriptionUsed: 0,
-        subscriptionProvider: null,
-        subscriptionId: null,
-        subscriptionStatus: "cancelled",
-      });
+    /* ===================================================== */
+    /* ================= HANDLE CANCELLATION =============== */
+    /* ===================================================== */
 
-      console.log("Dodo cancelled");
+    if (payload.type === "subscription.canceled") {
+
+      // 🔥 Only downgrade if this is the CURRENT active subscription
+      if (userData.subscriptionId === subscriptionId) {
+
+        await userRef.update({
+          subscriptionTier: "free",
+          subscriptionCredits: 5,
+          subscriptionUsed: 0,
+          subscriptionProvider: null,
+          subscriptionId: null,
+          subscriptionStatus: "cancelled",
+        });
+
+        console.log("Dodo cancelled (active subscription)");
+
+      } else {
+
+        console.log("Ignored old Dodo cancellation");
+
+      }
     }
 
     res.status(200).send("OK");
+
   } catch (err) {
     console.error("Dodo webhook error:", err);
-    res.status(200).send("Handled");
+    res.status(200).send("Handled safely");
   }
 });
 
