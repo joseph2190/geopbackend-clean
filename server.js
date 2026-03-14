@@ -245,31 +245,184 @@ app.post("/create-paypal-subscription", async (req, res) => {
     });
   }
 });
+/* ===================================================== */
+/* ================= PAYPAL CREDIT PACK ================= */
+/* ===================================================== */
 
+app.post("/create-paypal-pack", async (req, res) => {
+  try {
+
+    const { firebaseUid, pack } = req.body;
+
+    if (!firebaseUid || !pack) {
+      return res.status(400).json({ error: "Missing parameters" });
+    }
+
+    const userRef = db.collection("users").doc(firebaseUid);
+    const userDoc = await userRef.get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userData = userDoc.data();
+
+    const token = await getPayPalAccessToken();
+
+    let amount = "0.00";
+    let description = "";
+
+    if (pack === "starter") {
+      amount = "3.00";
+      description = "starter_pack";
+    }
+
+    if (pack === "power") {
+      amount = "15.00";
+      description = "power_pack";
+    }
+
+    console.log("Creating PayPal pack order:", pack);
+
+    const orderRes = await fetch(
+      "https://api-m.sandbox.paypal.com/v2/checkout/orders",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          intent: "CAPTURE",
+          purchase_units: [
+            {
+              custom_id: firebaseUid,
+              description: description,
+              amount: {
+                currency_code: "USD",
+                value: amount
+              }
+            }
+          ],
+          application_context: {
+            brand_name: "GeoPixel",
+            user_action: "PAY_NOW",
+            return_url:
+              "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+            cancel_url:
+              "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/pricing"
+          }
+        })
+      }
+    );
+
+    const orderData = await orderRes.json();
+
+    console.log("PayPal order response:", orderData);
+
+    const approveLink = orderData.links.find(l => l.rel === "approve");
+
+    if (!approveLink) {
+      return res.status(500).json({ error: "Approval link missing" });
+    }
+
+    res.json({
+      approveUrl: approveLink.href
+    });
+
+  } catch (err) {
+
+    console.error("PayPal pack error:", err);
+
+    res.status(500).json({
+      error: "PayPal pack checkout failed"
+    });
+
+  }
+});
 /* ===================================================== */
 /* ================= PAYPAL WEBHOOK ==================== */
 /* ===================================================== */
 
 app.post("/paypal-webhook", async (req, res) => {
   try {
+
     const event = req.body;
+    const eventType = event.event_type;
     const resource = event.resource;
+
     if (!resource) return res.status(200).send("No resource");
+
+    console.log("====== PAYPAL WEBHOOK ======");
+    console.log("EVENT:", eventType);
+
+    /* ===================================================== */
+    /* ================= CREDIT PACK PURCHASE =============== */
+    /* ===================================================== */
+
+    if (eventType === "PAYMENT.CAPTURE.COMPLETED") {
+
+      const purchaseUnit = resource.purchase_units?.[0];
+
+      const firebaseUid = purchaseUnit?.custom_id;
+      const description = purchaseUnit?.description;
+
+      if (!firebaseUid) {
+        console.log("No firebaseUid in capture");
+        return res.status(200).send("No UID");
+      }
+
+      const userRef = db.collection("users").doc(firebaseUid);
+
+      if (description === "starter_pack") {
+
+        await userRef.update({
+          purchasedCredits: admin.firestore.FieldValue.increment(5)
+        });
+
+        console.log("Starter pack purchased (+5 credits)");
+        return res.status(200).send("Credits added");
+      }
+
+      if (description === "power_pack") {
+
+        await userRef.update({
+          purchasedCredits: admin.firestore.FieldValue.increment(50)
+        });
+
+        console.log("Power pack purchased (+50 credits)");
+        return res.status(200).send("Credits added");
+      }
+
+      return res.status(200).send("Capture processed");
+    }
+
+    /* ===================================================== */
+    /* ================= SUBSCRIPTION EVENTS ================ */
+    /* ===================================================== */
 
     const firebaseUid = resource.custom_id;
     const subscriptionId = resource.id;
     const planId = resource.plan_id;
-    const eventType = event.event_type;
 
-    if (!firebaseUid) return res.status(200).send("No UID");
+    if (!firebaseUid) {
+      console.log("No firebaseUid in subscription event");
+      return res.status(200).send("No UID");
+    }
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
-    if (!userDoc.exists) return res.status(200).send("User not found");
+
+    if (!userDoc.exists) {
+      console.log("User not found in Firestore");
+      return res.status(200).send("User not found");
+    }
 
     const userData = userDoc.data();
 
-    /* ================= ACTIVATION ================= */
+    /* ===================================================== */
+    /* ================= SUB ACTIVATED ===================== */
+    /* ===================================================== */
 
     if (eventType === "BILLING.SUBSCRIPTION.ACTIVATED") {
 
@@ -292,11 +445,9 @@ app.post("/paypal-webhook", async (req, res) => {
         credits = 50;
       }
 
-      // 🔥 SAVE OLD SUB BEFORE OVERWRITING
       const oldProvider = userData.subscriptionProvider;
       const oldSubscriptionId = userData.subscriptionId;
 
-      // Activate new
       await userRef.update({
         subscriptionTier: tier,
         subscriptionCredits: credits,
@@ -309,13 +460,15 @@ app.post("/paypal-webhook", async (req, res) => {
 
       console.log("PayPal activated:", tier);
 
-      // 🔥 NOW cancel old AFTER activation
+      /* ============ Cancel previous subscription ============ */
+
       if (
         oldSubscriptionId &&
         oldProvider &&
         oldSubscriptionId !== subscriptionId
       ) {
-        console.log("Cancelling previous subscription after activation");
+
+        console.log("Cancelling previous subscription");
 
         if (oldProvider === "paypal") {
           await cancelPayPalSubscription(oldSubscriptionId);
@@ -327,7 +480,9 @@ app.post("/paypal-webhook", async (req, res) => {
       }
     }
 
-    /* ================= CANCELLATION ================= */
+    /* ===================================================== */
+    /* ================= SUB CANCELLED ===================== */
+    /* ===================================================== */
 
     if (
       eventType === "BILLING.SUBSCRIPTION.CANCELLED" ||
@@ -335,7 +490,6 @@ app.post("/paypal-webhook", async (req, res) => {
       eventType === "BILLING.SUBSCRIPTION.SUSPENDED"
     ) {
 
-      // Only downgrade if this is current active subscription
       if (userData.subscriptionId === subscriptionId) {
 
         await userRef.update({
@@ -347,18 +501,22 @@ app.post("/paypal-webhook", async (req, res) => {
           subscriptionStatus: "cancelled",
         });
 
-        console.log("PayPal cancelled (active subscription)");
+        console.log("PayPal cancelled active subscription");
 
       } else {
-        console.log("Ignored old PayPal cancellation");
+
+        console.log("Ignored old cancellation");
+
       }
     }
 
     res.status(200).send("OK");
 
   } catch (err) {
+
     console.error("PayPal webhook error:", err);
-    res.status(200).send("Handled");
+    res.status(200).send("Handled safely");
+
   }
 });
 
