@@ -355,48 +355,50 @@ app.post("/paypal-webhook", async (req, res) => {
 
     console.log("====== PAYPAL WEBHOOK ======");
     console.log("EVENT:", eventType);
+	
+/* ===================================================== */
+/* ================= CREDIT PACK PURCHASE =============== */
+/* ===================================================== */
 
-    /* ===================================================== */
-    /* ================= CREDIT PACK PURCHASE =============== */
-    /* ===================================================== */
+if (
+  eventType === "PAYMENT.CAPTURE.COMPLETED" ||
+  eventType === "CHECKOUT.ORDER.APPROVED"
+) {
 
-    if (eventType === "PAYMENT.CAPTURE.COMPLETED") {
+  const purchaseUnit = resource.purchase_units?.[0];
 
-      const purchaseUnit = resource.purchase_units?.[0];
+  const firebaseUid = purchaseUnit?.custom_id;
+  const description = purchaseUnit?.description;
 
-      const firebaseUid = purchaseUnit?.custom_id;
-      const description = purchaseUnit?.description;
+  if (!firebaseUid) {
+    console.log("No firebaseUid in PayPal pack purchase");
+    return res.status(200).send("No UID");
+  }
 
-      if (!firebaseUid) {
-        console.log("No firebaseUid in capture");
-        return res.status(200).send("No UID");
-      }
+  const userRef = db.collection("users").doc(firebaseUid);
 
-      const userRef = db.collection("users").doc(firebaseUid);
+  if (description === "starter_pack") {
 
-      if (description === "starter_pack") {
+    await userRef.update({
+      purchasedCredits: admin.firestore.FieldValue.increment(5)
+    });
 
-        await userRef.update({
-          purchasedCredits: admin.firestore.FieldValue.increment(5)
-        });
+    console.log("Starter pack purchased (+5 credits)");
+    return res.status(200).send("Credits added");
+  }
 
-        console.log("Starter pack purchased (+5 credits)");
-        return res.status(200).send("Credits added");
-      }
+  if (description === "power_pack") {
 
-      if (description === "power_pack") {
+    await userRef.update({
+      purchasedCredits: admin.firestore.FieldValue.increment(50)
+    });
 
-        await userRef.update({
-          purchasedCredits: admin.firestore.FieldValue.increment(50)
-        });
+    console.log("Power pack purchased (+50 credits)");
+    return res.status(200).send("Credits added");
+  }
 
-        console.log("Power pack purchased (+50 credits)");
-        return res.status(200).send("Credits added");
-      }
-
-      return res.status(200).send("Capture processed");
-    }
-
+  return res.status(200).send("Pack processed");
+}
     /* ===================================================== */
     /* ================= SUBSCRIPTION EVENTS ================ */
     /* ===================================================== */
