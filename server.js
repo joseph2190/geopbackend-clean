@@ -383,24 +383,49 @@ app.post("/dodo-webhook", async (req, res) => {
       null;
 
     if (!firebaseUid) {
-      console.log("No firebaseUid");
+      console.log("No firebaseUid in metadata");
       return res.status(200).send("No UID");
     }
 
     const userRef = db.collection("users").doc(firebaseUid);
     const userDoc = await userRef.get();
+
     if (!userDoc.exists) {
-      console.log("User not found");
+      console.log("User not found in Firestore");
       return res.status(200).send("User not found");
     }
 
     const userData = userDoc.data();
 
     /* ===================================================== */
-    /* ================= ACTIVATE SUBSCRIPTION ============= */
+    /* ================= PAYMENT SUCCEEDED ================= */
     /* ===================================================== */
 
     if (payload.type === "payment.succeeded") {
+
+      /* ================= CREDIT PACKS ================= */
+
+      if (productId === process.env.DODO_STARTER_PACK_ID) {
+
+        await userRef.update({
+          purchasedCredits: admin.firestore.FieldValue.increment(5)
+        });
+
+        console.log("Starter Pack purchased (+5 credits)");
+        return res.status(200).send("Credits added");
+      }
+
+      if (productId === process.env.DODO_POWER_PACK_ID) {
+
+        await userRef.update({
+          purchasedCredits: admin.firestore.FieldValue.increment(50)
+        });
+
+        console.log("Power Pack purchased (+50 credits)");
+        return res.status(200).send("Credits added");
+      }
+
+      /* ================= SUBSCRIPTIONS ================= */
 
       let tier = "free";
       let credits = 5;
@@ -421,11 +446,12 @@ app.post("/dodo-webhook", async (req, res) => {
         credits = 50;
       }
 
-      // 🔥 Save previous subscription before overwriting
+      // Save previous subscription
       const oldProvider = userData.subscriptionProvider;
       const oldSubscriptionId = userData.subscriptionId;
 
-      // Activate new subscription
+      /* ================= ACTIVATE SUB ================= */
+
       await userRef.update({
         subscriptionTier: tier,
         subscriptionCredits: credits,
@@ -436,9 +462,10 @@ app.post("/dodo-webhook", async (req, res) => {
         subscriptionStatus: "active",
       });
 
-      console.log("Dodo activated:", tier);
+      console.log("Dodo subscription activated:", tier);
 
-      // 🔥 Cancel old subscription AFTER activation
+      /* ================= CANCEL OLD SUB ================= */
+
       if (
         oldSubscriptionId &&
         oldProvider &&
@@ -457,12 +484,11 @@ app.post("/dodo-webhook", async (req, res) => {
     }
 
     /* ===================================================== */
-    /* ================= HANDLE CANCELLATION =============== */
+    /* ================= SUB CANCELLED ===================== */
     /* ===================================================== */
 
     if (payload.type === "subscription.canceled") {
 
-      // 🔥 Only downgrade if this is the CURRENT active subscription
       if (userData.subscriptionId === subscriptionId) {
 
         await userRef.update({
@@ -474,11 +500,11 @@ app.post("/dodo-webhook", async (req, res) => {
           subscriptionStatus: "cancelled",
         });
 
-        console.log("Dodo cancelled (active subscription)");
+        console.log("Dodo subscription cancelled (active)");
 
       } else {
 
-        console.log("Ignored old Dodo cancellation");
+        console.log("Ignored old cancellation");
 
       }
     }
@@ -490,7 +516,6 @@ app.post("/dodo-webhook", async (req, res) => {
     res.status(200).send("Handled safely");
   }
 });
-
 /* ================= START SERVER ================= */
 
 const PORT = process.env.PORT || 10000;
