@@ -25,7 +25,7 @@ const db = admin.firestore();
 
 const dodo = new DodoPayments({
   bearerToken: process.env.DODO_PAYMENTS_API_KEY,
-  environment: "test_mode", // change to live_mode later
+  environment: "live_mode", // change to live_mode later
 });
 
 /* ===================================================== */
@@ -38,7 +38,7 @@ async function getPayPalAccessToken() {
   ).toString("base64");
 
   const res = await fetch(
-    "https://api-m.sandbox.paypal.com/v1/oauth2/token",
+    "https://api-m.paypal.com/v1/oauth2/token",
     {
       method: "POST",
       headers: {
@@ -58,7 +58,7 @@ async function cancelPayPalSubscription(subscriptionId) {
   const token = await getPayPalAccessToken();
 
   await fetch(
-    `https://api-m.sandbox.paypal.com/v1/billing/subscriptions/${subscriptionId}/cancel`,
+    `https://api-m.paypal.com/v1/billing/subscriptions/${subscriptionId}/cancel`,
     {
       method: "POST",
       headers: {
@@ -172,7 +172,7 @@ app.post("/create-paypal-subscription", async (req, res) => {
     /* ================= CREATE SUBSCRIPTION ================= */
 
     const subRes = await fetch(
-      "https://api-m.sandbox.paypal.com/v1/billing/subscriptions",
+      "https://api-m.paypal.com/v1/billing/subscriptions",
       {
         method: "POST",
         headers: {
@@ -285,7 +285,7 @@ app.post("/create-paypal-pack", async (req, res) => {
     console.log("Creating PayPal pack order:", pack);
 
     const orderRes = await fetch(
-      "https://api-m.sandbox.paypal.com/v2/checkout/orders",
+      "https://api-m.paypal.com/v2/checkout/orders",
       {
         method: "POST",
         headers: {
