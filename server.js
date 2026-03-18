@@ -131,7 +131,7 @@ app.post("/create-checkout-session", async (req, res) => {
       customer: { email: userData.email },
       metadata: { firebaseUid, productId },
       return_url:
-        "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+        "https://geopixel.app/payment-success",
     });
 
     res.json({ checkoutUrl: session.checkout_url });
@@ -189,9 +189,9 @@ app.post("/create-paypal-subscription", async (req, res) => {
             brand_name: "GeoPixel",
             user_action: "SUBSCRIBE_NOW",
             return_url:
-              "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+              "https://geopixel.app/payment-success",
             cancel_url:
-              "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/pricing",
+              "https://geopixel.app/pricing",
           },
         }),
       }
@@ -308,9 +308,9 @@ app.post("/create-paypal-pack", async (req, res) => {
             brand_name: "GeoPixel",
             user_action: "PAY_NOW",
             return_url:
-              "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/payment-success",
+              "https://geopixel.app/payment-success",
             cancel_url:
-              "https://ais-dev-nkyqsdho3kbs2ciwpt7hyn-59374719483.europe-west2.run.app/pricing"
+              "https://geopixel.app/pricing"
           }
         })
       }
