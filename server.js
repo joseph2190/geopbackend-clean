@@ -348,8 +348,14 @@ app.post("/paypal-webhook", async (req, res) => {
   try {
 
     const event = req.body;
+
+/* ✅ ADD THIS */
+    if (!event || !event.event_type) {
+  return res.status(400).send("Invalid webhook");
+    }
+
     const eventType = event.event_type;
-    const resource = event.resource;
+   const resource = event.resource;
 
     if (!resource) return res.status(200).send("No resource");
 
@@ -529,6 +535,11 @@ if (
 app.post("/dodo-webhook", async (req, res) => {
   try {
     const payload = req.body;
+
+/* ✅ ADD THIS */
+if (!payload || !payload.type) {
+  return res.status(400).send("Invalid webhook");
+     }
 
     console.log("====== DODO WEBHOOK RECEIVED ======");
     console.log("TYPE:", payload.type);
