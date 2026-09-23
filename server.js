@@ -541,12 +541,17 @@ if (!payload || !payload.type) {
   return res.status(400).send("Invalid webhook");
      }
 
+<<<<<<< HEAD
    console.log("====== DODO WEBHOOK RECEIVED ======");
 console.log("TYPE:", payload.type);
 console.log(
   "FULL DODO PAYLOAD:",
   JSON.stringify(payload, null, 2)
 );
+=======
+    console.log("====== DODO WEBHOOK RECEIVED ======");
+    console.log("TYPE:", payload.type);
+>>>>>>> 42bf5e31b2a97e5ffb92009357c3dd64849b05a4
 
     const firebaseUid = payload.data?.metadata?.firebaseUid;
     const productId = payload.data?.metadata?.productId;
